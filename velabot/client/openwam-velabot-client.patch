@@ -1,0 +1,1217 @@
+diff --git a/docs/inference/client.md b/docs/inference/client.md
+index 725fc0f1..3add4b05 100644
+--- a/docs/inference/client.md
++++ b/docs/inference/client.md
+@@ -54,6 +54,17 @@ stderr 打印最后一条真实传输错误;requester 对连续传输失败按
+   `normalized_relative_rot6d`,但 wire 必须返回 `absolute_pose20`。客户端在
+   动作进入执行链前严格核对 10x20 actions、50x20 reference 诊断、request ID、
+   anchor、execution source 与 norm stats ID;归一化诊断数据从不执行。
++- `openwam`:独立 OpenWAM MoonCake front 的固定 `openwam_native` 方言。仅接受双臂、无底盘、
++  每臂 `xyz3 + rot6d6 + opening_width` 的 20 维 schema；握手必须返回完整且逐字段匹配的
++  `velabot.io/v2`，并核对 `absolute_flange_rot6d_20d`、H32、`dt_sec=1/60`、三路客户端
++  角色及 `checkpoint`。客户端角色 `head_fpv/left_hand/right_hand` 映射为 front 的
++  `head_camera/left_wrist_camera/right_wrist_camera`；JPEG 原始 bytes 只做 base64 JSON 编码，
++  不解码、不缩放、不重编码。夹爪上行使用 `g=2*w/0.1-1`，下行使用 `w=0.05*(g+1)`，不裁剪。
++  RTC、hidden、缺失或额外相机、未握手请求、非 32×20 或非有限动作均明确拒绝。
++  身份还必须包含 checkpoint/config/stats 名称及其 SHA-256、固定 OpenWAM source
++  repository/revision、`patch_sha256`/`files_sha256` source fingerprint、`action_mode=eef|delta`
++  和完整 `model_contract`；这些字段在握手后冻结，响应改变任一项都会拒绝。两种 mode
++  对外都返回 absolute flange EEF20；delta 的 XYZ addback 由服务端 engine 执行一次。
+ 
+ 新服务器 = 新 codec,不改会话。
+ 
+@@ -79,6 +90,16 @@ state 发布进 `FlatStateBox`;请求线程读快照。相机帧从环形缓冲
+ `t' = t_r + (t_a − t_o)`,`R' = R_a R_oᵀ R_r`(逐 plan 锚点:观测侧
+ 随 chunk 存,机器人侧在安装时取)。关节型动作不重锚。
+ 
++OpenWAM 返回的原始动作已经是训练坐标系下的 absolute flange pose；这和服务端对
++XYZ-only delta 的 anchor 还原是两件事。客户端不会把 XYZ delta 再加回。现有执行链的
++`ObservationDeltaRemapper` 仍可按观测延迟把绝对动作重锚到机器人当前位姿；离线比较
++若读取 front 原始响应，应明确记录是否经过该执行侧重锚。协议/CPU fixture 不代表真实
++模型、真机运动或任务成功率已验证。
++
++profile 的 `pipeline.task_pose` 必须和模型的 body-frame `gripper_flange` 等价，且
++TCP 必须确实指向 gripper flange；`IOSchema` 只描述维度、列序和末端单位，不证明
++外参、法兰定义或坐标转换已经标定。
++
+ ## 会话与执行
+ 
+ `InferenceSession.tick()` 原子地 pop 下一步(带 plan_id 与锚),
+diff --git a/packages/velabot-autonomy/docs/inference.md b/packages/velabot-autonomy/docs/inference.md
+index 439e2d25..8339aa68 100644
+--- a/packages/velabot-autonomy/docs/inference.md
++++ b/packages/velabot-autonomy/docs/inference.md
+@@ -59,6 +59,15 @@ RTC 从 `nero-dual-arm` 的 `inference_loop.py` 移植。**客户端不评判模
+ - `pi05`：现网 π0.5 服务的双臂协议（`poses_left/right + grippers_left/right`，
+   20 维，兼容旧的 `action_l/action_r` 分侧响应）。构造时校验 schema 恰好是
+   双臂 rot6d+gripper，不是就当场拒绝。
++- `openwam`：独立 OpenWAM MoonCake front 的 `openwam_native` 方言，固定双臂无底盘
++  20 维 `rot6d9 + opening_width`。完整 `velabot.io/v2` schema、H32、60 Hz、绝对法兰
++  语义、三路客户端相机角色和 checkpoint 都在握手中校验。相机角色映射为
++  `head_camera/left_wrist_camera/right_wrist_camera`，原始 JPEG bytes 只 base64 编码；
++  夹爪米制宽度与模型的 `[-1, 1]` 通道按固定公式转换，不裁剪或补齐动作。
++  握手还冻结 checkpoint/config/stats 名称及 SHA-256、固定 base revision、source 的
++  `patch_sha256`/`files_sha256`、`action_mode=eef|delta` 和对应 model contract；两种 mode
++  的 wire 都是 absolute flange EEF20，delta XYZ addback 由服务端 engine 执行一次，infer
++  身份改变会被拒绝。
+ 
+ 协议是 `ProtocolTransport` 里的纯编解码，session 不知道协议名。
+ 
+@@ -86,6 +95,13 @@ R' = R_action @ R_obs^T @ R_robot
+ 
+ joint 格式的组原样通过（关节动作本来就是机器人自己的坐标）。
+ 
++OpenWAM 的 server raw action 已是 absolute flange pose，客户端不做 XYZ delta
++anchor 加回；上述 remapper 仍属于既有执行侧观测延迟重锚。OpenWAM codec 的 CPU
++fixture 只证明协议闭包，不证明真实模型或真机任务效果。
++
++profile 的 `pipeline.task_pose` 必须与模型 body-frame 的 gripper flange 等价，并且
++TCP 必须确实是 gripper flange；`IOSchema` 本身不能证明这些外参和坐标定义。
++
+ ## 测试
+ 
+ ```bash
+diff --git a/packages/velabot-autonomy/src/velabot/inference/client.py b/packages/velabot-autonomy/src/velabot/inference/client.py
+index f2619c37..bbc95aaf 100644
+--- a/packages/velabot-autonomy/src/velabot/inference/client.py
++++ b/packages/velabot-autonomy/src/velabot/inference/client.py
+@@ -124,7 +124,7 @@ def negotiate(
+ #: pi0.5 server names its wire "pose20"; our gateway names the generic one
+ #: "flat". A backend that does not say (an older server) is tolerated -- the
+ #: guard exists for the case where both sides *did* say and they disagree.
+-_CODEC_WIRE_FORMATS = {"flat": ("flat",), "pi05": ("pose20",)}
++_CODEC_WIRE_FORMATS = {"flat": ("flat",), "pi05": ("pose20",), "openwam": ("openwam_native",)}
+ 
+ 
+ def _require_wire_format_match(transport: InferenceTransport, reply: dict[str, Any], info: BackendInfo) -> None:
+diff --git a/packages/velabot-autonomy/src/velabot/inference/protocol/__init__.py b/packages/velabot-autonomy/src/velabot/inference/protocol/__init__.py
+index c99666fc..71d94c7f 100644
+--- a/packages/velabot-autonomy/src/velabot/inference/protocol/__init__.py
++++ b/packages/velabot-autonomy/src/velabot/inference/protocol/__init__.py
+@@ -10,6 +10,28 @@ from velabot.inference.protocol.mobile import (
+     MobileCodec,
+     MobileDialect,
+ )
++from velabot.inference.protocol.openwam import (
++    OPENWAM_ACTION_DIM,
++    OPENWAM_ACTION_HORIZON,
++    OPENWAM_ACTION_MODES,
++    OPENWAM_ACTION_SEMANTICS,
++    OPENWAM_DT_SEC,
++    OPENWAM_EFFECTOR_CHANNEL,
++    OPENWAM_EFFECTOR_PROTOCOL,
++    OPENWAM_GROUPS,
++    OPENWAM_IMAGE_ROLE_MAP,
++    OPENWAM_IMAGE_ROLES,
++    OPENWAM_INTEGRATED_BASE_REVISION,
++    OPENWAM_INTEGRATED_SOURCE_REPOSITORY,
++    OPENWAM_MODEL_CONTRACT,
++    OPENWAM_MODEL_CONTRACTS,
++    OPENWAM_SERVER_IMAGE_ROLES,
++    OPENWAM_SOURCE_REPOSITORY,
++    OPENWAM_SOURCE_REVISION,
++    OPENWAM_WIRE_FORMAT,
++    OpenWAMCodec,
++    model_contract_for,
++)
+ from velabot.inference.protocol.pi05 import PI05_IMAGE_ROLES, Pi05Codec
+ 
+ _CODECS = {
+@@ -19,6 +41,7 @@ _CODECS = {
+     "mobile_tcp_lift": partial(MobileCodec, dialect=TCP_LIFT),
+     "mobile_joint_base": partial(MobileCodec, dialect=JOINT_BASE),
+     "pi05": Pi05Codec,
++    "openwam": OpenWAMCodec,
+ }
+ 
+ 
+@@ -42,6 +65,24 @@ def create_codec(name: str, **kwargs) -> ProtocolCodec:
+ 
+ __all__ = [
+     "JOINT_BASE",
++    "OPENWAM_ACTION_DIM",
++    "OPENWAM_ACTION_HORIZON",
++    "OPENWAM_ACTION_MODES",
++    "OPENWAM_ACTION_SEMANTICS",
++    "OPENWAM_DT_SEC",
++    "OPENWAM_EFFECTOR_CHANNEL",
++    "OPENWAM_EFFECTOR_PROTOCOL",
++    "OPENWAM_GROUPS",
++    "OPENWAM_IMAGE_ROLES",
++    "OPENWAM_IMAGE_ROLE_MAP",
++    "OPENWAM_INTEGRATED_BASE_REVISION",
++    "OPENWAM_INTEGRATED_SOURCE_REPOSITORY",
++    "OPENWAM_MODEL_CONTRACT",
++    "OPENWAM_MODEL_CONTRACTS",
++    "OPENWAM_SERVER_IMAGE_ROLES",
++    "OPENWAM_SOURCE_REPOSITORY",
++    "OPENWAM_SOURCE_REVISION",
++    "OPENWAM_WIRE_FORMAT",
+     "PELVIS_LIFT",
+     "PELVIS_PLANAR",
+     "PI05_IMAGE_ROLES",
+@@ -50,9 +91,11 @@ __all__ = [
+     "IdentityCodec",
+     "MobileCodec",
+     "MobileDialect",
++    "OpenWAMCodec",
+     "Pi05Codec",
+     "ProtocolCodec",
+     "ProtocolTransport",
+     "codec_names",
+     "create_codec",
++    "model_contract_for",
+ ]
+diff --git a/packages/velabot-autonomy/src/velabot/inference/protocol/openwam.py b/packages/velabot-autonomy/src/velabot/inference/protocol/openwam.py
+new file mode 100644
+index 00000000..5f51599f
+--- /dev/null
++++ b/packages/velabot-autonomy/src/velabot/inference/protocol/openwam.py
+@@ -0,0 +1,461 @@
++"""The OpenWAM MoonCake native HTTP protocol.
++
++The native front owns model preprocessing and action semantics.  This codec
++only maps the VelaBot contract to the front's fixed 20-wide wire layout:
++client camera roles become the front's camera names and gripper widths in
++metres become OpenWAM's normalized gripper values.  JPEG payloads are kept as
++opaque bytes and base64 encoded for the JSON request; the client never decodes
++or resizes them.
++"""
++
++from __future__ import annotations
++
++import base64
++import math
++from collections.abc import Mapping
++from typing import Any
++
++import numpy as np
++
++from velabot.contracts.errors import ContractViolation
++from velabot.contracts.io_schema import ArmFormat, IOSchema
++
++OPENWAM_WIRE_FORMAT = "openwam_native"
++OPENWAM_ACTION_SEMANTICS = "absolute_flange_rot6d_20d"
++OPENWAM_ACTION_DIM = 20
++OPENWAM_ACTION_HORIZON = 32
++OPENWAM_DT_SEC = 1.0 / 60.0
++OPENWAM_IMAGE_ROLES = ("head_fpv", "left_hand", "right_hand")
++OPENWAM_SERVER_IMAGE_ROLES = ("head_camera", "left_wrist_camera", "right_wrist_camera")
++OPENWAM_IMAGE_ROLE_MAP = dict(zip(OPENWAM_IMAGE_ROLES, OPENWAM_SERVER_IMAGE_ROLES, strict=True))
++OPENWAM_EFFECTOR_PROTOCOL = "agilex.parallel_gripper.width_m/v1"
++OPENWAM_EFFECTOR_CHANNEL = "opening_width"
++OPENWAM_GROUPS = ("left_arm", "right_arm")
++OPENWAM_SOURCE_REPOSITORY = "OpenWAM-Official/OpenWAM"
++OPENWAM_INTEGRATED_SOURCE_REPOSITORY = "YXGN/OpenWAM"
++OPENWAM_SOURCE_REVISION = "c171854a18a2acbeaadf46a746c4118c0e0c00f7"
++OPENWAM_INTEGRATED_BASE_REVISION = "059cbfbfc068355f3d60fe9b014ff6469d1e94a3"
++OPENWAM_ACTION_MODES = ("eef", "delta")
++_OPENWAM_MODEL_CONTRACT_BASE = {
++    "action_semantics": OPENWAM_ACTION_SEMANTICS,
++    "coordinate_frame": "body",
++    "pose_frame": "gripper_flange",
++    "position_unit": "m",
++    "rotation_representation": "rot6d_first_two_columns",
++    "gripper_unit": "width_m",
++    "native_gripper_unit": "normalized_width",
++    "native_gripper_range": [-1.0, 1.0],
++    "gripper_affine_scale": 0.05,
++    "gripper_affine_offset": 0.05,
++    "policy_hz": 60,
++}
++
++
++def model_contract_for(action_mode: str) -> dict[str, Any]:
++    """Return the fixed model contract for one trained action mode."""
++    if action_mode not in OPENWAM_ACTION_MODES:
++        raise ContractViolation(f"openwam action_mode={action_mode!r}; expected one of {OPENWAM_ACTION_MODES}")
++    contract = dict(_OPENWAM_MODEL_CONTRACT_BASE)
++    contract["action_mode"] = action_mode
++    contract["delta_xyz_addback"] = "none_for_absolute_eef" if action_mode == "eef" else "engine_once_xyz_state0"
++    return contract
++
++
++OPENWAM_MODEL_CONTRACTS = {mode: model_contract_for(mode) for mode in OPENWAM_ACTION_MODES}
++OPENWAM_MODEL_CONTRACT = OPENWAM_MODEL_CONTRACTS["eef"]
++_GRIPPER_INDEXES = (9, 19)
++
++
++class OpenWAMCodec:
++    """Strict codec for the fixed MoonCake OpenWAM native dialect."""
++
++    name = "openwam"
++    wire_format = OPENWAM_WIRE_FORMAT
++
++    def __init__(self, schema: IOSchema) -> None:
++        if len(schema.groups) != 2 or schema.include_base:
++            raise ContractViolation(
++                "openwam protocol serves exactly two arm groups and no base block; "
++                f"schema has {len(schema.groups)} groups, include_base={schema.include_base}"
++            )
++        if schema.group_names != OPENWAM_GROUPS:
++            raise ContractViolation(
++                f"openwam protocol requires groups in left-first order {OPENWAM_GROUPS}; "
++                f"schema has {schema.group_names}"
++            )
++        for spec in schema.groups:
++            if spec.arm_format is not ArmFormat.ROT6D or spec.arm_dim != 9 or spec.effector_dim != 1:
++                raise ContractViolation(
++                    "openwam protocol needs rot6d(9)+one opening_width effector per arm; "
++                    f"group {spec.group!r} is {spec.arm_format.value}({spec.arm_dim})+effector({spec.effector_dim})"
++                )
++            if spec.effector_protocol != OPENWAM_EFFECTOR_PROTOCOL:
++                raise ContractViolation(
++                    f"openwam protocol requires effector_protocol={OPENWAM_EFFECTOR_PROTOCOL!r}; "
++                    f"group {spec.group!r} declares {spec.effector_protocol!r}"
++                )
++            if spec.effector_names != (OPENWAM_EFFECTOR_CHANNEL,):
++                raise ContractViolation(
++                    f"openwam protocol requires effector channel {OPENWAM_EFFECTOR_CHANNEL!r}; "
++                    f"group {spec.group!r} declares {spec.effector_names!r}"
++                )
++            if spec.effector_position_unit != "width_m":
++                raise ContractViolation(
++                    f"openwam protocol requires effector position unit 'width_m'; "
++                    f"group {spec.group!r} declares {spec.effector_position_unit!r}"
++                )
++        if schema.action_dim != OPENWAM_ACTION_DIM:
++            raise ContractViolation(
++                f"openwam protocol requires action_dim={OPENWAM_ACTION_DIM}; schema has {schema.action_dim}"
++            )
++        self._schema = schema
++        self._handshaken = False
++        self._server_prompt: str | None = None
++        self._checkpoint = ""
++        self._identity: dict[str, Any] = {}
++
++    def encode_request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
++        if _is_handshake(path):
++            out = dict(payload)
++            out.update(
++                {
++                    "wire_format": OPENWAM_WIRE_FORMAT,
++                    "action_dim": OPENWAM_ACTION_DIM,
++                    "action_horizon": OPENWAM_ACTION_HORIZON,
++                    "action_semantics": OPENWAM_ACTION_SEMANTICS,
++                    "dt_sec": OPENWAM_DT_SEC,
++                    "supports_rtc": False,
++                    "return_hidden": False,
++                    "image_roles": list(OPENWAM_IMAGE_ROLES),
++                }
++            )
++            return out
++        if _is_infer(path):
++            if not self._handshaken:
++                raise ContractViolation("openwam /infer requires a successful /handshake first")
++            return self._encode_infer(payload)
++        return payload
++
++    def _encode_infer(self, payload: Mapping[str, Any]) -> dict[str, Any]:
++        if payload.get("rtc") not in (None, False, {}):
++            raise ContractViolation("openwam does not support RTC")
++        if payload.get("return_hidden"):
++            raise ContractViolation("openwam does not support hidden features")
++        prompt = payload.get("prompt")
++        if not isinstance(prompt, str) or prompt != self._server_prompt:
++            raise ContractViolation("openwam prompt must match the exact training prompt from the handshake")
++        state = _finite_vector(payload.get("state"), OPENWAM_ACTION_DIM, "state")
++        images = payload.get("images")
++        if not isinstance(images, Mapping):
++            raise ContractViolation("openwam inference requires an images object")
++        unknown = sorted(set(images) - set(OPENWAM_IMAGE_ROLES))
++        missing = [role for role in OPENWAM_IMAGE_ROLES if role not in images]
++        if unknown:
++            raise ContractViolation(f"openwam client image roles are exactly {OPENWAM_IMAGE_ROLES}; got {unknown}")
++        if missing:
++            raise ContractViolation(f"openwam inference is missing image roles: {', '.join(missing)}")
++        encoded: dict[str, str] = {}
++        for client_role in OPENWAM_IMAGE_ROLES:
++            raw = images[client_role]
++            if not isinstance(raw, (bytes, bytearray)) or not raw:
++                raise ContractViolation(f"openwam image {client_role!r} must be non-empty JPEG bytes")
++            encoded[OPENWAM_IMAGE_ROLE_MAP[client_role]] = base64.b64encode(bytes(raw)).decode("ascii")
++        for index in _GRIPPER_INDEXES:
++            # No clip is intentional: silently changing a requested width would
++            # hide a contract error at the model boundary.
++            state[index] = 2.0 * state[index] / 0.1 - 1.0
++        return {
++            "type": "observation",
++            "wire_format": OPENWAM_WIRE_FORMAT,
++            "action_dim": OPENWAM_ACTION_DIM,
++            "action_semantics": OPENWAM_ACTION_SEMANTICS,
++            "state": state.tolist(),
++            "images": encoded,
++            "prompt": prompt,
++        }
++
++    def decode_response(self, path: str, response: dict[str, Any]) -> dict[str, Any]:
++        if not isinstance(response, Mapping):
++            raise ContractViolation(f"openwam response must be a JSON object, got {type(response).__name__}")
++        if response.get("ok") is False:
++            message = str(response.get("message") or response.get("error") or "no reason given")
++            raise ContractViolation(f"openwam server rejected the request: {message}")
++        if _is_handshake(path):
++            self._validate_handshake(response)
++            identity = _identity_from(response)
++            if self._handshaken and (identity != self._identity or response.get("prompt") != self._server_prompt):
++                raise ContractViolation("openwam handshake model identity changed after previous handshake")
++            self._handshaken = True
++            self._server_prompt = response["prompt"]
++            self._checkpoint = response["checkpoint"]
++            self._identity = identity
++            return dict(response)
++        if _is_infer(path):
++            if not self._handshaken:
++                raise ContractViolation("openwam /infer requires a successful /handshake first")
++            return self._decode_infer(response)
++        return dict(response)
++
++    def _validate_handshake(self, response: Mapping[str, Any]) -> None:
++        _require_equal(response, "wire_format", OPENWAM_WIRE_FORMAT, "openwam handshake")
++        _require_equal(response, "action_dim", OPENWAM_ACTION_DIM, "openwam handshake")
++        _require_equal(response, "action_horizon", OPENWAM_ACTION_HORIZON, "openwam handshake")
++        _require_equal(response, "action_semantics", OPENWAM_ACTION_SEMANTICS, "openwam handshake")
++        dt = response.get("dt_sec")
++        if (
++            isinstance(dt, bool)
++            or not isinstance(dt, (int, float))
++            or not math.isclose(float(dt), OPENWAM_DT_SEC, rel_tol=0.0, abs_tol=1e-12)
++        ):
++            raise ContractViolation(f"openwam handshake dt_sec={dt!r}; expected {OPENWAM_DT_SEC}")
++        if "dt" in response:
++            legacy_dt = response.get("dt")
++            if (
++                isinstance(legacy_dt, bool)
++                or not isinstance(legacy_dt, (int, float))
++                or not math.isfinite(float(legacy_dt))
++                or not math.isclose(float(legacy_dt), OPENWAM_DT_SEC, rel_tol=0.0, abs_tol=1e-12)
++            ):
++                raise ContractViolation(f"openwam handshake dt={legacy_dt!r} conflicts with dt_sec={OPENWAM_DT_SEC}")
++        _require_equal(response, "supports_rtc", False, "openwam handshake")
++        _require_equal(response, "return_hidden", False, "openwam handshake")
++        roles = response.get("image_roles")
++        if not isinstance(roles, list) or tuple(roles) != OPENWAM_IMAGE_ROLES:
++            raise ContractViolation(f"openwam handshake image_roles={roles!r}; expected {OPENWAM_IMAGE_ROLES}")
++        prompt = response.get("prompt")
++        if not isinstance(prompt, str) or not prompt:
++            raise ContractViolation("openwam handshake prompt must be a non-empty exact training string")
++        checkpoint = response.get("checkpoint")
++        if not isinstance(checkpoint, str) or not checkpoint:
++            raise ContractViolation("openwam handshake checkpoint must be a non-empty string")
++        advertised = response.get("io_schema")
++        if not isinstance(advertised, Mapping):
++            raise ContractViolation("openwam handshake lacks a complete velabot.io/v2 io_schema")
++        self._schema.require_wire_match(advertised, source="openwam handshake")
++        action_mode = response.get("action_mode")
++        if action_mode not in OPENWAM_ACTION_MODES:
++            raise ContractViolation(
++                f"openwam handshake action_mode={action_mode!r}; expected one of {OPENWAM_ACTION_MODES}"
++            )
++        advertised_contract = response.get("model_contract")
++        if isinstance(advertised_contract, Mapping) and advertised_contract.get("action_mode") != action_mode:
++            raise ContractViolation("openwam handshake model_contract action_mode disagrees with identity action_mode")
++        identity = _identity_from(response)
++        if identity["action_mode"] != action_mode:
++            raise ContractViolation("openwam handshake top-level action_mode disagrees with model identity")
++        expected_contract = OPENWAM_MODEL_CONTRACTS[action_mode]
++        if identity["model_contract"] != expected_contract:
++            raise ContractViolation(
++                f"openwam handshake model_contract={identity['model_contract']!r}; expected {expected_contract!r}"
++            )
++
++    def _decode_infer(self, response: Mapping[str, Any]) -> dict[str, Any]:
++        for key, expected in (
++            ("wire_format", OPENWAM_WIRE_FORMAT),
++            ("action_dim", OPENWAM_ACTION_DIM),
++            ("action_horizon", OPENWAM_ACTION_HORIZON),
++            ("action_semantics", OPENWAM_ACTION_SEMANTICS),
++        ):
++            _require_equal(response, key, expected, "openwam response")
++        dt = response.get("dt_sec")
++        if (
++            isinstance(dt, bool)
++            or not isinstance(dt, (int, float))
++            or not math.isfinite(float(dt))
++            or not math.isclose(float(dt), OPENWAM_DT_SEC, rel_tol=0.0, abs_tol=1e-12)
++        ):
++            raise ContractViolation(f"openwam response dt_sec={dt!r}; expected {OPENWAM_DT_SEC}")
++        if "dt" in response:
++            legacy_dt = response.get("dt")
++            if (
++                isinstance(legacy_dt, bool)
++                or not isinstance(legacy_dt, (int, float))
++                or not math.isfinite(float(legacy_dt))
++                or not math.isclose(float(legacy_dt), OPENWAM_DT_SEC, rel_tol=0.0, abs_tol=1e-12)
++            ):
++                raise ContractViolation(f"openwam response dt={legacy_dt!r} conflicts with dt_sec={OPENWAM_DT_SEC}")
++        checkpoint = response.get("checkpoint")
++        if not isinstance(checkpoint, str) or not checkpoint:
++            raise ContractViolation("openwam response checkpoint must be a non-empty string")
++        if checkpoint != self._checkpoint:
++            raise ContractViolation(
++                f"openwam response checkpoint={checkpoint!r}; expected negotiated {self._checkpoint!r}"
++            )
++        if _identity_from(response) != self._identity:
++            raise ContractViolation("openwam response model identity changed after handshake")
++        actions = _finite_matrix(response.get("actions"), OPENWAM_ACTION_HORIZON, OPENWAM_ACTION_DIM, "actions")
++        for index in _GRIPPER_INDEXES:
++            actions[:, index] = 0.05 * (actions[:, index] + 1.0)
++        out = dict(response)
++        out["actions"] = actions.tolist()
++        return out
++
++
++def _is_handshake(path: str) -> bool:
++    return path.rstrip("/").endswith("handshake")
++
++
++def _is_infer(path: str) -> bool:
++    return path.rstrip("/").endswith("infer")
++
++
++def _require_equal(response: Mapping[str, Any], key: str, expected: Any, label: str) -> None:
++    actual = response.get(key)
++    if isinstance(expected, bool):
++        mismatch = not isinstance(actual, bool) or actual is not expected
++    elif isinstance(expected, int):
++        mismatch = isinstance(actual, bool) or not isinstance(actual, int) or actual != expected
++    else:
++        mismatch = actual != expected
++    if mismatch:
++        raise ContractViolation(f"{label} {key}={actual!r}; expected {expected!r}")
++
++
++def _identity_from(response: Mapping[str, Any]) -> dict[str, Any]:
++    """Read the service-owned model identity and reject incomplete claims."""
++    identity: dict[str, Any] = {}
++    for key in ("checkpoint", "config", "stats"):
++        value = response.get(key)
++        if not isinstance(value, str) or not value.strip():
++            raise ContractViolation(f"openwam identity {key} must be a non-empty string")
++        identity[key] = value
++    for key in ("checkpoint_sha256", "config_sha256", "stats_sha256"):
++        value = response.get(key)
++        if (
++            not isinstance(value, str)
++            or len(value) != 64
++            or value != value.lower()
++            or any(char not in "0123456789abcdef" for char in value)
++        ):
++            raise ContractViolation(f"openwam identity {key} must be a lowercase SHA-256 hex digest")
++        identity[key] = value
++    source = response.get("source")
++    if not isinstance(source, Mapping):
++        raise ContractViolation("openwam identity source must be an object")
++    unknown_source = sorted(set(source) - {"repository", "base_revision", "revision", "patch_sha256", "files_sha256"})
++    if unknown_source:
++        raise ContractViolation(f"openwam identity source has unknown fields: {unknown_source}")
++    repository = source.get("repository")
++    if repository not in (OPENWAM_SOURCE_REPOSITORY, OPENWAM_INTEGRATED_SOURCE_REPOSITORY):
++        raise ContractViolation(
++            f"openwam identity source.repository={repository!r}; expected a supported OpenWAM repository"
++        )
++    integrated = "base_revision" in source
++    base_revision = source.get("base_revision")
++    if not integrated:
++        if repository != OPENWAM_SOURCE_REPOSITORY or source.get("revision") != OPENWAM_SOURCE_REVISION:
++            raise ContractViolation(
++                f"openwam identity source.revision must be {OPENWAM_SOURCE_REVISION} for legacy source"
++            )
++    else:
++        if repository != OPENWAM_INTEGRATED_SOURCE_REPOSITORY:
++            raise ContractViolation("openwam integrated source requires repository YXGN/OpenWAM")
++        if base_revision != OPENWAM_INTEGRATED_BASE_REVISION:
++            raise ContractViolation(
++                f"openwam identity source.base_revision={base_revision!r}; "
++                f"expected {OPENWAM_INTEGRATED_BASE_REVISION!r}"
++            )
++        revision = source.get("revision")
++        if (
++            not isinstance(revision, str)
++            or len(revision) != 40
++            or revision != revision.lower()
++            or any(char not in "0123456789abcdef" for char in revision)
++        ):
++            raise ContractViolation("openwam integrated source.revision must be a lowercase 40-hex commit")
++    if "patch_sha256" not in source or "files_sha256" not in source:
++        raise ContractViolation("openwam identity source requires patch_sha256 and files_sha256")
++    patch_sha256 = source.get("patch_sha256")
++    if patch_sha256 is not None and (
++        not isinstance(patch_sha256, str)
++        or len(patch_sha256) != 64
++        or patch_sha256 != patch_sha256.lower()
++        or any(char not in "0123456789abcdef" for char in patch_sha256)
++    ):
++        raise ContractViolation("openwam identity source.patch_sha256 must be null or lowercase SHA-256 hex")
++    files_sha256 = source.get("files_sha256", {})
++    if not isinstance(files_sha256, Mapping):
++        raise ContractViolation("openwam identity source.files_sha256 must be an object")
++    normalized_files: dict[str, str] = {}
++    for path, digest in files_sha256.items():
++        if (
++            not isinstance(path, str)
++            or not path
++            or path.startswith("/")
++            or ".." in path.split("/")
++            or not isinstance(digest, str)
++            or len(digest) != 64
++            or digest != digest.lower()
++            or any(char not in "0123456789abcdef" for char in digest)
++        ):
++            raise ContractViolation("openwam identity source.files_sha256 has an invalid relative path or digest")
++        normalized_files[path] = digest
++    if response.get("action_mode") == "delta" and (patch_sha256 is None or not normalized_files):
++        raise ContractViolation("openwam delta identity requires a non-empty applied patch fingerprint")
++    if integrated and (patch_sha256 is None or not normalized_files):
++        raise ContractViolation("openwam integrated identity requires a non-empty patch/files fingerprint")
++    identity["source"] = {
++        "repository": source["repository"],
++        "revision": source["revision"],
++        "patch_sha256": patch_sha256,
++        "files_sha256": normalized_files,
++    }
++    if integrated:
++        identity["source"]["base_revision"] = base_revision
++    contract = response.get("model_contract")
++    if not isinstance(contract, Mapping):
++        raise ContractViolation("openwam identity model_contract must be an object")
++    identity["model_contract"] = dict(contract)
++    action_mode = response.get("action_mode")
++    if action_mode not in OPENWAM_ACTION_MODES:
++        raise ContractViolation(f"openwam identity action_mode={action_mode!r}; expected one of {OPENWAM_ACTION_MODES}")
++    identity["action_mode"] = action_mode
++    return identity
++
++
++def _finite_vector(value: Any, width: int, label: str) -> np.ndarray:
++    if not isinstance(value, (list, tuple)) or len(value) != width:
++        got = len(value) if isinstance(value, (list, tuple)) else type(value).__name__
++        raise ContractViolation(f"{label} must have width {width}; got {got}")
++    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
++        raise ContractViolation(f"{label} must contain only numbers")
++    result = np.asarray(value, dtype=float)
++    if not np.all(np.isfinite(result)):
++        raise ContractViolation(f"{label} contains NaN or Inf")
++    return result
++
++
++def _finite_matrix(value: Any, rows: int, columns: int, label: str) -> np.ndarray:
++    if not isinstance(value, list) or len(value) != rows:
++        got = len(value) if isinstance(value, list) else type(value).__name__
++        raise ContractViolation(f"{label} must have shape ({rows}, {columns}); got {got}")
++    for row in value:
++        if not isinstance(row, list) or len(row) != columns:
++            raise ContractViolation(f"{label} must have shape ({rows}, {columns})")
++        if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in row):
++            raise ContractViolation(f"{label} must contain only numbers")
++    result = np.asarray(value, dtype=float)
++    if not np.all(np.isfinite(result)):
++        raise ContractViolation(f"{label} contains NaN or Inf")
++    return result
++
++
++__all__ = [
++    "OPENWAM_ACTION_DIM",
++    "OPENWAM_ACTION_HORIZON",
++    "OPENWAM_ACTION_SEMANTICS",
++    "OPENWAM_DT_SEC",
++    "OPENWAM_EFFECTOR_CHANNEL",
++    "OPENWAM_EFFECTOR_PROTOCOL",
++    "OPENWAM_GROUPS",
++    "OPENWAM_IMAGE_ROLES",
++    "OPENWAM_IMAGE_ROLE_MAP",
++    "OPENWAM_INTEGRATED_BASE_REVISION",
++    "OPENWAM_INTEGRATED_SOURCE_REPOSITORY",
++    "OPENWAM_MODEL_CONTRACT",
++    "OPENWAM_SERVER_IMAGE_ROLES",
++    "OPENWAM_SOURCE_REPOSITORY",
++    "OPENWAM_SOURCE_REVISION",
++    "OPENWAM_WIRE_FORMAT",
++    "OpenWAMCodec",
++]
+diff --git a/packages/velabot-autonomy/tests/test_openwam_protocol.py b/packages/velabot-autonomy/tests/test_openwam_protocol.py
+new file mode 100644
+index 00000000..7b48b0bf
+--- /dev/null
++++ b/packages/velabot-autonomy/tests/test_openwam_protocol.py
+@@ -0,0 +1,295 @@
++"""The OpenWAM MoonCake native protocol is closed and unit preserving."""
++
++from __future__ import annotations
++
++import base64
++
++import numpy as np
++import pytest
++from test_action_format import dual_arm_descriptor
++
++from velabot.contracts.errors import ContractViolation
++from velabot.contracts.io_schema import ArmFormat, IOSchema
++from velabot.inference.protocol import (
++    OPENWAM_ACTION_HORIZON,
++    OPENWAM_ACTION_SEMANTICS,
++    OPENWAM_DT_SEC,
++    OPENWAM_IMAGE_ROLES,
++    OPENWAM_INTEGRATED_BASE_REVISION,
++    OPENWAM_INTEGRATED_SOURCE_REPOSITORY,
++    OPENWAM_MODEL_CONTRACTS,
++    OPENWAM_SOURCE_REPOSITORY,
++    OPENWAM_SOURCE_REVISION,
++    OpenWAMCodec,
++    codec_names,
++)
++
++
++def schema() -> IOSchema:
++    descriptor = dual_arm_descriptor()
++    for group in descriptor.arm_groups:
++        # The generic test descriptor uses a test protocol. OpenWAM accepts
++        # only the verified AgileX width channel.
++        effector = group.end_effector
++        object.__setattr__(effector, "protocol_key", "agilex.parallel_gripper.width_m/v1")
++        object.__setattr__(effector, "joint_names", ("opening_width",))
++    return IOSchema.from_descriptor(descriptor, arm_format=ArmFormat.ROT6D)
++
++
++def handshake(codec: OpenWAMCodec) -> dict:
++    request = codec.encode_request("/handshake", {"type": "handshake", "io_schema": schema().to_wire_dict()})
++    assert request["wire_format"] == "openwam_native"
++    assert request["image_roles"] == list(OPENWAM_IMAGE_ROLES)
++    response = {
++        "type": "handshake_ack",
++        "ok": True,
++        "backend": "openwam",
++        "wire_format": "openwam_native",
++        "action_dim": 20,
++        "action_horizon": OPENWAM_ACTION_HORIZON,
++        "action_semantics": OPENWAM_ACTION_SEMANTICS,
++        "supports_rtc": False,
++        "return_hidden": False,
++        "dt_sec": OPENWAM_DT_SEC,
++        "image_roles": list(OPENWAM_IMAGE_ROLES),
++        "prompt": "pick up the mooncake",
++        "io_schema": schema().to_wire_dict(),
++        **identity(),
++    }
++    codec.decode_response("/handshake", response)
++    return response
++
++
++def test_native_request_maps_roles_and_gripper_without_touching_jpeg_bytes():
++    codec = OpenWAMCodec(schema())
++    response = handshake(codec)
++    raw = {role: (role.encode() + b"\xff\x00") for role in OPENWAM_IMAGE_ROLES}
++    state = [0.0] * 20
++    state[9] = 0.05
++    state[19] = 0.15
++    request = codec.encode_request("/infer", {"state": state, "images": raw, "prompt": response["prompt"]})
++    assert set(request["images"]) == {"head_camera", "left_wrist_camera", "right_wrist_camera"}
++    for role, original in raw.items():
++        assert base64.b64decode(request["images"][_server_role(role)]) == original
++    assert request["state"][9] == pytest.approx(0.0)
++    assert request["state"][19] == pytest.approx(2.0)
++
++
++def _server_role(client_role: str) -> str:
++    return {
++        "head_fpv": "head_camera",
++        "left_hand": "left_wrist_camera",
++        "right_hand": "right_wrist_camera",
++    }[client_role]
++
++
++def identity(action_mode: str = "eef", *, integrated: bool = False) -> dict:
++    source = {
++        "repository": OPENWAM_SOURCE_REPOSITORY,
++        "revision": OPENWAM_SOURCE_REVISION,
++        "patch_sha256": None,
++        "files_sha256": {},
++    }
++    if action_mode == "delta":
++        source.update(patch_sha256="a" * 64, files_sha256={"openwam/deploy/engine.py": "b" * 64})
++    if integrated:
++        source = {
++            "repository": OPENWAM_INTEGRATED_SOURCE_REPOSITORY,
++            "base_revision": OPENWAM_INTEGRATED_BASE_REVISION,
++            "revision": "c" * 40,
++            "patch_sha256": "d" * 64,
++            "files_sha256": {
++                "core/openwam/deploy/engine.py": "e" * 64,
++                "velabot/client/openwam.py": "f" * 64,
++            },
++        }
++    return {
++        "checkpoint": "checkpoint_step_3000.safetensors",
++        "config": "config.yaml",
++        "stats": "normalization_stats.npy",
++        "checkpoint_sha256": "a" * 64,
++        "config_sha256": "b" * 64,
++        "stats_sha256": "c" * 64,
++        "action_mode": action_mode,
++        "source": source,
++        "model_contract": dict(OPENWAM_MODEL_CONTRACTS[action_mode]),
++    }
++
++
++def test_native_response_is_exactly_h32_and_converts_only_grippers():
++    codec = OpenWAMCodec(schema())
++    handshake(codec)
++    actions = np.zeros((32, 20), dtype=float).tolist()
++    actions[0][9] = -1.0
++    actions[0][19] = 1.0
++    decoded = codec.decode_response(
++        "/infer",
++        {
++            "actions": actions,
++            "action_dim": 20,
++            "action_horizon": 32,
++            "wire_format": "openwam_native",
++            "action_semantics": OPENWAM_ACTION_SEMANTICS,
++            "dt_sec": OPENWAM_DT_SEC,
++            **identity(),
++        },
++    )
++    values = np.asarray(decoded["actions"])
++    assert values.shape == (32, 20)
++    assert values[0, 9] == pytest.approx(0.0)
++    assert values[0, 19] == pytest.approx(0.1)
++
++
++def test_delta_model_identity_is_accepted_while_wire_semantics_stay_absolute():
++    codec = OpenWAMCodec(schema())
++    reply = handshake_reply()
++    reply.update(identity("delta"))
++    codec.decode_response("/handshake", reply)
++    assert reply["action_mode"] == "delta"
++    assert reply["action_semantics"] == OPENWAM_ACTION_SEMANTICS
++
++
++def test_integrated_model_identity_accepts_pinned_base_and_fork_revision():
++    codec = OpenWAMCodec(schema())
++    reply = handshake_reply()
++    reply.update(identity(integrated=True))
++    codec.decode_response("/handshake", reply)
++    assert reply["source"]["repository"] == OPENWAM_INTEGRATED_SOURCE_REPOSITORY
++    assert reply["source"]["base_revision"] == OPENWAM_INTEGRATED_BASE_REVISION
++
++
++@pytest.mark.parametrize(
++    "mutate, message",
++    [
++        (lambda reply: reply["source"].update(base_revision="wrong"), "base_revision"),
++        (lambda reply: reply["source"].update(base_revision=None), "base_revision"),
++        (lambda reply: reply["source"].update(repository=OPENWAM_SOURCE_REPOSITORY), "integrated source"),
++        (lambda reply: reply["source"].update(revision="short"), "40-hex"),
++        (lambda reply: reply["source"].update(patch_sha256=None), "non-empty patch/files"),
++    ],
++)
++def test_integrated_model_identity_rejects_unpinned_or_incomplete_source(mutate, message):
++    codec = OpenWAMCodec(schema())
++    reply = handshake_reply()
++    reply.update(identity(integrated=True))
++    mutate(reply)
++    with pytest.raises(ContractViolation, match=message):
++        codec.decode_response("/handshake", reply)
++
++
++@pytest.mark.parametrize(
++    "mutate, message",
++    [
++        (lambda reply: reply.update(wire_format="pose20"), "wire_format"),
++        (lambda reply: reply.update(action_semantics="xyz_delta20"), "action_semantics"),
++        (lambda reply: reply.update(dt_sec=0.05), "dt_sec"),
++        (lambda reply: reply.update(dt=0.05), "dt=.*conflicts"),
++        (lambda reply: reply.update(supports_rtc=0), "supports_rtc"),
++        (lambda reply: reply.update(image_roles=["head_fpv"]), "image_roles"),
++        (lambda reply: reply.update(io_schema={"version": "velabot.io/v2"}), "io_schema"),
++        (lambda reply: reply.update(supports_rtc=True), "supports_rtc"),
++        (lambda reply: reply.update(action_mode="delta"), "action_mode"),
++        (
++            lambda reply: reply.update(
++                source={
++                    "repository": OPENWAM_SOURCE_REPOSITORY,
++                    "revision": "wrong",
++                    "patch_sha256": None,
++                    "files_sha256": {},
++                }
++            ),
++            "source.revision",
++        ),
++        (lambda reply: reply.update(model_contract={"pose_frame": "tcp"}), "model_contract"),
++    ],
++)
++def test_handshake_refuses_dialect_capability_or_schema_mismatch(mutate, message):
++    codec = OpenWAMCodec(schema())
++    reply = handshake_reply()
++    mutate(reply)
++    with pytest.raises(ContractViolation, match=message):
++        codec.decode_response("/handshake", reply)
++
++
++def handshake_reply() -> dict:
++    codec = OpenWAMCodec(schema())
++    request = {"type": "handshake", "io_schema": schema().to_wire_dict()}
++    # Build the canonical response without changing codec state.
++    codec.encode_request("/handshake", request)
++    return {
++        "type": "handshake_ack",
++        "ok": True,
++        "wire_format": "openwam_native",
++        "action_dim": 20,
++        "action_horizon": 32,
++        "action_semantics": OPENWAM_ACTION_SEMANTICS,
++        "supports_rtc": False,
++        "return_hidden": False,
++        "dt_sec": OPENWAM_DT_SEC,
++        "image_roles": list(OPENWAM_IMAGE_ROLES),
++        "prompt": "task",
++        "io_schema": schema().to_wire_dict(),
++        **identity(),
++    }
++
++
++def test_unhandshaken_rtc_hidden_prompt_images_and_shapes_are_refused():
++    codec = OpenWAMCodec(schema())
++    with pytest.raises(ContractViolation, match="handshake"):
++        codec.encode_request("/infer", {"state": [0.0] * 20})
++    prompt = handshake(codec)["prompt"]
++    with pytest.raises(ContractViolation, match="RTC"):
++        codec.encode_request("/infer", {"state": [0.0] * 20, "images": {}, "prompt": prompt, "rtc": {"s": 1}})
++    with pytest.raises(ContractViolation, match="hidden"):
++        codec.encode_request("/infer", {"state": [0.0] * 20, "images": {}, "prompt": prompt, "return_hidden": True})
++    with pytest.raises(ContractViolation, match="missing image"):
++        codec.encode_request("/infer", {"state": [0.0] * 20, "images": {}, "prompt": prompt})
++    bad_actions = [[0.0] * 20] * 31
++    with pytest.raises(ContractViolation, match="shape"):
++        codec.decode_response(
++            "/infer",
++            {
++                "actions": bad_actions,
++                "action_dim": 20,
++                "action_horizon": 32,
++                "wire_format": "openwam_native",
++                "action_semantics": OPENWAM_ACTION_SEMANTICS,
++                "dt_sec": OPENWAM_DT_SEC,
++                **identity(),
++            },
++        )
++
++
++def test_infer_refuses_a_changed_frozen_model_identity():
++    codec = OpenWAMCodec(schema())
++    handshake(codec)
++    identity_changed = identity()
++    identity_changed["config_sha256"] = "d" * 64
++    with pytest.raises(ContractViolation, match="model identity changed"):
++        codec.decode_response(
++            "/infer",
++            {
++                "actions": [[0.0] * 20] * 32,
++                "action_dim": 20,
++                "action_horizon": 32,
++                "wire_format": "openwam_native",
++                "action_semantics": OPENWAM_ACTION_SEMANTICS,
++                "dt_sec": OPENWAM_DT_SEC,
++                **identity_changed,
++            },
++        )
++
++
++def test_rehandshake_refuses_a_changed_frozen_model_identity():
++    codec = OpenWAMCodec(schema())
++    handshake(codec)
++    changed = handshake_reply()
++    changed["stats_sha256"] = "d" * 64
++    with pytest.raises(ContractViolation, match="model identity changed"):
++        codec.decode_response("/handshake", changed)
++
++
++def test_registry_and_wrong_schema_are_closed():
++    assert "openwam" in codec_names()
++    with pytest.raises(ContractViolation, match="rot6d"):
++        OpenWAMCodec(IOSchema.from_descriptor(dual_arm_descriptor(), arm_format=ArmFormat.JOINT))
+diff --git a/packages/velabot-runtime/docs/edge.md b/packages/velabot-runtime/docs/edge.md
+index b5099622..ec118e7a 100644
+--- a/packages/velabot-runtime/docs/edge.md
++++ b/packages/velabot-runtime/docs/edge.md
+@@ -31,6 +31,7 @@ vela-run run  --robot profiles/robots/agilex-nero-dual-arm.yaml \
+ |---|---|
+ | `--strategy rtc` | 服务端广告 `supports_rtc` 才允许；否则明确报错，不静默降级。客户端不评判模型输出：correction 只在协议或计划层面被拒（服务端未应用、计划已变更），没有任何基于数值的准入门 |
+ | `--protocol pi05` | 现网 π0.5 双臂协议；默认 `flat` |
++| `--protocol openwam` | 独立 OpenWAM MoonCake `openwam_native` 协议；双臂无底盘 20D、H32、60 Hz，握手核对完整 `velabot.io/v2` schema、绝对法兰语义、相机角色和 checkpoint |
+ | `--protocol mobile_tcp_lift` | G1-D 微波炉 TCP_LIFT 专用协议；手臂 pose 在各自 mount/IK 坐标系中控制，与底盘和升降柱解耦；发送 26D mobile state，接收 pose20 + base4，升降通道按归一化速度转换为 SI 速度；RTC 使用模型原生 23D chunk |
+ | `--protocol mobile_pelvis_lift` | 现网 upper-body TCP checkpoint 的兼容协议；pose20 数值直接作为当前 mount/IK pose，发送 26D `mobile_pelvis_lift_state`，接收 pose20 + base4；仅支持 `receding_horizon` |
+ | `--protocol mobile_pelvis_planar` | G1-D 微波炉 pelvis-planar22 专用协议；发送 25D mobile state，接收 pose20 + base4。checkpoint 未驱动的 base 通道原样通过 |
+diff --git a/packages/velabot-runtime/src/velabot/app_runtime/policy_compose.py b/packages/velabot-runtime/src/velabot/app_runtime/policy_compose.py
+index 599aaf2f..66b16f63 100644
+--- a/packages/velabot-runtime/src/velabot/app_runtime/policy_compose.py
++++ b/packages/velabot-runtime/src/velabot/app_runtime/policy_compose.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import math
+ from typing import Any
+ 
+ from velabot.app_runtime.compose import next_episode_id, retune_chain_probes
+@@ -10,6 +11,7 @@ from velabot.app_runtime.policy_control import PolicyConfig, PolicyController
+ from velabot.contracts.errors import ContractViolation
+ 
+ MOBILE_PROTOCOLS = frozenset(("mobile_tcp_lift", "mobile_pelvis_lift", "mobile_pelvis_planar", "mobile_joint_base"))
++OPENWAM_PROTOCOLS = frozenset(("openwam",))
+ 
+ 
+ def grid_dt_sec(backend_dt_sec: float, policy_hz: float) -> float:
+@@ -29,6 +31,12 @@ def schema_for(*, descriptor, protocol: str, arm_format: str = "rot6d", include_
+         if arm_format != "rot6d":
+             raise ContractViolation(f"{protocol} requires --arm-format rot6d")
+         return IOSchema.from_descriptor(descriptor, arm_format=ArmFormat.ROT6D, include_base=True)
++    if protocol in OPENWAM_PROTOCOLS:
++        if arm_format != "rot6d":
++            raise ContractViolation(f"{protocol} requires --arm-format rot6d")
++        if include_base:
++            raise ContractViolation(f"{protocol} serves a dual-arm schema without a base block")
++        return IOSchema.from_descriptor(descriptor, arm_format=ArmFormat.ROT6D, include_base=False)
+     return IOSchema.from_descriptor(descriptor, arm_format=ArmFormat(arm_format), include_base=include_base)
+ 
+ 
+@@ -80,7 +88,9 @@ def codec_for(
+     from velabot.inference.protocol.mobile import DIALECTS
+ 
+     dialect = DIALECTS.get(protocol)
+-    kwargs: dict[str, Any] = {"schema": schema} if protocol == "pi05" or dialect is not None else {}
++    kwargs: dict[str, Any] = (
++        {"schema": schema} if protocol in OPENWAM_PROTOCOLS or protocol == "pi05" or dialect is not None else {}
++    )
+     if protocol == "pi05":
+         kwargs.update(rlt_norm_stats_id=rlt_norm_stats_id, rlt_execution_source=rlt_execution_source)
+     if dialect is not None and dialect.normalized_lift:
+@@ -125,6 +135,14 @@ def assemble_policy(
+         arm_format=str(opts.get("arm_format", "rot6d")),
+         include_base=bool(opts.get("include_base", False)),
+     )
++    if config.protocol in OPENWAM_PROTOCOLS and (
++        not math.isfinite(config.policy_hz)
++        or config.policy_hz < 0
++        or (config.policy_hz > 0 and not math.isclose(config.policy_hz, 60.0, rel_tol=0.0, abs_tol=1e-9))
++    ):
++        raise ContractViolation("openwam policy_hz is fixed at 60 Hz; omit --policy-hz or use 60")
++    if config.protocol in OPENWAM_PROTOCOLS and opts.get("obs_image_size") is not None:
++        raise ContractViolation("openwam owns training image resizing; --obs-image-size must be omitted")
+     descriptor = hardware.descriptor()
+     if schema.include_base and not descriptor.groups_of_kind("chassis"):
+         raise ContractViolation(f"{descriptor.robot_id}: --include-base needs a chassis group in the profile")
+@@ -201,6 +219,14 @@ def assemble_policy(
+     backends: list[Any] = []
+ 
+     def connect(backend: str, protocol: str, strategy_name: str):
++        current_policy_hz = controller.config.policy_hz
++        if protocol in OPENWAM_PROTOCOLS:
++            if opts.get("obs_image_size") is not None:
++                raise ContractViolation("openwam owns training image resizing; --obs-image-size must be omitted")
++            if not math.isfinite(current_policy_hz) or current_policy_hz < 0 or (
++                current_policy_hz > 0 and not math.isclose(current_policy_hz, 60.0, rel_tol=0.0, abs_tol=1e-9)
++            ):
++                raise ContractViolation("openwam policy_hz is fixed at 60 Hz; omit --policy-hz or use 60")
+         codec = codec_for(
+             protocol,
+             schema,
+@@ -223,7 +249,7 @@ def assemble_policy(
+                 expected_action_dim=info.action_dim,
+                 expected_horizon=info.action_horizon if strategy_name == "rtc" else None,
+             )
+-            requester.step_period_ns = int(grid_dt_sec(info.dt_sec, config.policy_hz) * 1e9)
++            requester.step_period_ns = int(grid_dt_sec(info.dt_sec, current_policy_hz) * 1e9)
+             requester.action_format = action_format
+             requester.pause()
+             previous = backends[-1] if backends else None
+@@ -304,6 +330,7 @@ def assemble_policy(
+ 
+ __all__ = [
+     "MOBILE_PROTOCOLS",
++    "OPENWAM_PROTOCOLS",
+     "assemble_policy",
+     "codec_for",
+     "grid_dt_sec",
+diff --git a/packages/velabot-runtime/src/velabot/app_runtime/policy_control.py b/packages/velabot-runtime/src/velabot/app_runtime/policy_control.py
+index d2021f07..1ab1f130 100644
+--- a/packages/velabot-runtime/src/velabot/app_runtime/policy_control.py
++++ b/packages/velabot-runtime/src/velabot/app_runtime/policy_control.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import math
+ from collections.abc import Callable
+ from dataclasses import dataclass, replace
+ from typing import Any
+@@ -55,6 +56,15 @@ class PolicyController:
+         self._connected: PolicyConfig | None = None
+         self._info: Any = None
+         self._last_error = ""
++        if config.protocol == "openwam":
++            try:
++                policy_hz = float(config.policy_hz)
++            except (TypeError, ValueError) as exc:
++                raise ContractViolation("openwam policy_hz must be finite and fixed at 60 Hz") from exc
++            if not math.isfinite(policy_hz) or policy_hz < 0 or (
++                policy_hz > 0 and not math.isclose(policy_hz, 60.0, rel_tol=0.0, abs_tol=1e-9)
++            ):
++                raise ContractViolation("openwam policy_hz is fixed at 60 Hz; omit --policy-hz or use 60")
+         if config.task:
+             self._builder.prompt = config.task
+ 
+@@ -165,6 +175,11 @@ class PolicyController:
+             raise ContractViolation(
+                 f"policy_hz must be positive (or 0 for the backend's dt), got {candidate.policy_hz}"
+             )
++        if candidate.protocol == "openwam" and (
++            not math.isfinite(candidate.policy_hz)
++            or (candidate.policy_hz > 0 and not math.isclose(candidate.policy_hz, 60.0, rel_tol=0.0, abs_tol=1e-9))
++        ):
++            raise ContractViolation("openwam policy_hz is fixed at 60 Hz; omit policy_hz or use 60")
+         previous, self._config = self._config, candidate
+         if candidate.task != previous.task:
+             self._builder.prompt = candidate.task
+diff --git a/packages/velabot-runtime/src/velabot/apps/edge/main.py b/packages/velabot-runtime/src/velabot/apps/edge/main.py
+index 31c946da..adc2a5f2 100644
+--- a/packages/velabot-runtime/src/velabot/apps/edge/main.py
++++ b/packages/velabot-runtime/src/velabot/apps/edge/main.py
+@@ -47,6 +47,7 @@ PROTOCOLS = (
+     "mobile_tcp_lift",
+     "mobile_joint_base",
+     "pi05",
++    "openwam",
+ )
+ #: Protocols whose observation and action spaces are not the robot's own.
+ MOBILE_PROTOCOLS = frozenset(("mobile_tcp_lift", "mobile_pelvis_lift", "mobile_pelvis_planar", "mobile_joint_base"))
+@@ -339,6 +340,12 @@ def _schema(args, descriptor):
+         raise ContractViolation("--rlt-norm-stats-id requires --protocol pi05")
+     if args.rlt_norm_stats_id and args.strategy == "rtc":
+         raise ContractViolation("RLT absolute-pose20 wire mode uses receding_horizon, not --strategy rtc")
++    if args.protocol == "openwam":
++        if args.arm_format != "rot6d":
++            raise ContractViolation("openwam requires --arm-format rot6d")
++        if args.include_base:
++            raise ContractViolation("openwam serves a dual-arm schema without a base block")
++        return IOSchema.from_descriptor(descriptor, arm_format=ArmFormat.ROT6D, include_base=False)
+     if args.protocol == "mobile_joint_base":
+         if args.arm_format != "joint":
+             raise ContractViolation("mobile_joint_base requires --arm-format joint")
+@@ -420,7 +427,7 @@ def _codec_for(protocol: str, schema, descriptor, **kwargs):
+     from velabot.inference.protocol.mobile import DIALECTS
+ 
+     dialect = DIALECTS.get(protocol)
+-    codec_kwargs = {"schema": schema} if protocol == "pi05" or dialect is not None else {}
++    codec_kwargs = {"schema": schema} if protocol in {"pi05", "openwam"} or dialect is not None else {}
+     if protocol == "pi05":
+         codec_kwargs.update(kwargs)
+     if dialect is not None and dialect.normalized_lift:
+@@ -492,8 +499,15 @@ def _plan(args) -> int:
+             f"q{args.obs_image_quality} (recording keeps capture size)"
+         )
+ 
+-    if args.policy_hz < 0:
++    if args.policy_hz != args.policy_hz or args.policy_hz in (float("inf"), float("-inf")):
++        blockers.append(f"--policy-hz must be finite; got {args.policy_hz}")
++    elif args.policy_hz < 0:
+         blockers.append(f"--policy-hz must not be negative; got {args.policy_hz}")
++    if args.protocol == "openwam":
++        if args.policy_hz > 0 and args.policy_hz != 60.0:
++            blockers.append("openwam policy grid is fixed at 60 Hz; omit --policy-hz or use 60")
++        if args.obs_image_size:
++            blockers.append("openwam owns training image resizing; omit --obs-image-size")
+     blockers.extend(
+         base_block_blockers(
+             descriptor,
+diff --git a/packages/velabot-runtime/src/velabot/apps/validation/main.py b/packages/velabot-runtime/src/velabot/apps/validation/main.py
+index 163bce03..b28541f2 100644
+--- a/packages/velabot-runtime/src/velabot/apps/validation/main.py
++++ b/packages/velabot-runtime/src/velabot/apps/validation/main.py
+@@ -18,6 +18,7 @@ PROTOCOLS = (
+     "mobile_tcp_lift",
+     "mobile_joint_base",
+     "pi05",
++    "openwam",
+ )
+ STRATEGIES = ("receding_horizon", "rtc")
+ 
+diff --git a/packages/velabot-runtime/tests/test_edge_camera_inputs_cli.py b/packages/velabot-runtime/tests/test_edge_camera_inputs_cli.py
+index ff2dcfd6..f883899e 100644
+--- a/packages/velabot-runtime/tests/test_edge_camera_inputs_cli.py
++++ b/packages/velabot-runtime/tests/test_edge_camera_inputs_cli.py
+@@ -99,6 +99,7 @@ def test_dex1_uses_the_regular_pi05_protocol_after_vendor_coordinate_v2():
+         "mobile_tcp_lift",
+         "mobile_joint_base",
+         "pi05",
++        "openwam",
+     )
+ 
+ 
+diff --git a/packages/velabot-runtime/tests/test_policy_controller.py b/packages/velabot-runtime/tests/test_policy_controller.py
+index 2d919656..06735d48 100644
+--- a/packages/velabot-runtime/tests/test_policy_controller.py
++++ b/packages/velabot-runtime/tests/test_policy_controller.py
+@@ -197,6 +197,19 @@ def test_unknown_and_nonsense_fields_are_refused():
+         controller.configure(rate_hz=-5.0)
+ 
+ 
++def test_openwam_policy_grid_accepts_only_backend_grid_or_60_hz():
++    controller, _session, _b, _r, _c = build(backend="http://x", protocol="openwam")
++    controller.configure(policy_hz=0.0)
++    controller.configure(policy_hz=60.0)
++    for value in (30.0, float("nan")):
++        with pytest.raises(ContractViolation, match="openwam policy_hz"):
++            controller.configure(policy_hz=value)
++    with pytest.raises(ContractViolation, match="policy_hz"):
++        controller.configure(policy_hz=-1.0)
++    with pytest.raises(ContractViolation, match="openwam policy_hz"):
++        build(backend="http://x", protocol="openwam", policy_hz=float("nan"))
++
++
+ def test_the_initial_task_reaches_the_builder_without_an_edit():
+     _controller, _session, builder, _r, _c = build(task="pick up the block")
+     assert builder.prompt == "pick up the block"
+diff --git a/packages/velabot-runtime/tests/test_openwam_runtime.py b/packages/velabot-runtime/tests/test_openwam_runtime.py
+new file mode 100644
+index 00000000..42ca022b
+--- /dev/null
++++ b/packages/velabot-runtime/tests/test_openwam_runtime.py
+@@ -0,0 +1,37 @@
++"""Runtime composition selects the fixed OpenWAM schema and codec."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from velabot.app_runtime.policy_compose import codec_for, schema_for
++from velabot.apps.edge.main import _codec_for
++from velabot.contracts.errors import ContractViolation
++from velabot.hardware.profiles import load_descriptor
++
++PROFILE = Path(__file__).parents[3] / "profiles/robots/agilex-nero-dual-arm.yaml"
++
++
++def test_openwam_schema_and_codec_use_the_verified_profile_contract():
++    descriptor = load_descriptor(PROFILE)
++    schema = schema_for(descriptor=descriptor, protocol="openwam")
++    assert schema.action_dim == 20
++    assert schema.group_names == ("left_arm", "right_arm")
++    assert schema.include_base is False
++    assert codec_for("openwam", schema, descriptor).name == "openwam"
++    assert _codec_for("openwam", schema, descriptor).name == "openwam"
++
++
++@pytest.mark.parametrize(
++    "kwargs, message",
++    [
++        ({"arm_format": "joint"}, "arm-format"),
++        ({"include_base": True}, "base block"),
++    ],
++)
++def test_openwam_schema_rejects_non_mooncake_layout(kwargs, message):
++    descriptor = load_descriptor(PROFILE)
++    with pytest.raises(ContractViolation, match=message):
++        schema_for(descriptor=descriptor, protocol="openwam", **kwargs)

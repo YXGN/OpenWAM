@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "velabot-openwam-front"
+version = "0.1.0"
+description = "Independent HTTP front for the pinned OpenWAM MoonCake model"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10,<13", "numpy>=1.24"]
+
+[project.scripts]
+openwam-front = "openwam_front:main"
+
+[tool.setuptools]
+py-modules = ["openwam_front", "safety", "source_identity"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

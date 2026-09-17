@@ -1,0 +1,56 @@
+{
+  "checkpoint": "checkpoint_step_3000.safetensors",
+  "config": "config.yaml",
+  "stats": "normalization_stats.npy",
+  "checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "stats_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "action_mode": "eef",
+  "source": {
+    "repository": "YXGN/OpenWAM",
+    "base_revision": "059cbfbfc068355f3d60fe9b014ff6469d1e94a3",
+    "revision": "059cbfbfc068355f3d60fe9b014ff6469d1e94a3",
+    "patch_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "files_sha256": {
+      "velabot/source_files.json": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "model_contract": {
+    "coordinate_frame": "body",
+    "action_mode": "eef",
+    "action_semantics": "absolute_flange_rot6d_20d",
+    "pose_frame": "gripper_flange",
+    "position_unit": "m",
+    "rotation_representation": "rot6d_first_two_columns",
+    "gripper_unit": "width_m",
+    "native_gripper_unit": "normalized_width",
+    "native_gripper_range": [-1.0, 1.0],
+    "gripper_affine_scale": 0.05,
+    "gripper_affine_offset": 0.05,
+    "delta_xyz_addback": "none_for_absolute_eef",
+    "policy_hz": 60
+  },
+  "io_schema": {
+    "version": "velabot.io/v2",
+    "action_dim": 20,
+    "include_base": false,
+    "layout": [
+      "left_arm.arm.0", "left_arm.arm.1", "left_arm.arm.2", "left_arm.arm.3", "left_arm.arm.4", "left_arm.arm.5", "left_arm.arm.6", "left_arm.arm.7", "left_arm.arm.8", "left_arm.effector.position.opening_width",
+      "right_arm.arm.0", "right_arm.arm.1", "right_arm.arm.2", "right_arm.arm.3", "right_arm.arm.4", "right_arm.arm.5", "right_arm.arm.6", "right_arm.arm.7", "right_arm.arm.8", "right_arm.effector.position.opening_width"
+    ],
+    "groups": [
+      {
+        "group": "left_arm", "arm_format": "rot6d", "arm_dim": 9,
+        "effector_protocol": "agilex.parallel_gripper.width_m/v1", "effector_dim": 1,
+        "effector_names": ["opening_width"], "effector_position_unit": "width_m",
+        "effector_position_limits": [0.0, 0.1], "effector_position_velocity_max": []
+      },
+      {
+        "group": "right_arm", "arm_format": "rot6d", "arm_dim": 9,
+        "effector_protocol": "agilex.parallel_gripper.width_m/v1", "effector_dim": 1,
+        "effector_names": ["opening_width"], "effector_position_unit": "width_m",
+        "effector_position_limits": [0.0, 0.1], "effector_position_velocity_max": []
+      }
+    ]
+  }
+}

@@ -18,6 +18,7 @@ training:
   max_steps: null                 # Early stop after N steps (null = no limit; required when num_epochs is null)
   batch_size: 16                   # Per-GPU batch size
   gradient_accumulation_steps: 1  # Accumulate N micro-batches before optimizer step
+  bound_optimizer_groups: false   # MoonCake-only 128M groups; preserves other profiles
 
   # --- LR scheduler ---
   lr_scheduler: cosine            # cosine with linear warmup; null = constant LR

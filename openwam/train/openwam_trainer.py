@@ -384,6 +384,18 @@ class OpenWAMTrainer:
             video_lr=float(t.video_lr) if getattr(t, "video_lr", None) else None,
         )
         betas = tuple(getattr(t, "adam_betas", [0.9, 0.95]))
+        if bool(getattr(t, "bound_optimizer_groups", False)):
+            from openwam.train.utils.bounded_optimizer_groups import bound_optimizer_groups
+
+            params = bound_optimizer_groups(params)
+            logger.info("MoonCake bounded AdamW groups: %d groups, max 128M elements", len(params))
+            return torch.optim.AdamW(
+                params,
+                lr=float(t.learning_rate),
+                weight_decay=float(t.weight_decay),
+                betas=betas,
+                foreach=False,
+            )
         return torch.optim.AdamW(params, lr=float(t.learning_rate), weight_decay=float(t.weight_decay), betas=betas)
 
     # (4) Called by train() — build the training DataLoader (seeded generator when reproducible).

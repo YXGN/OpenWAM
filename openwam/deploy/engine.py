@@ -359,6 +359,21 @@ class JointInferenceEngine(BaseInferenceEngine):
         )
         result = self.architecture.generate(**generate_kwargs)
 
+        # MoonCake delta outputs are reconstructed after the normalizer's
+        # unify-gather and denormalization. Use the exact raw state that
+        # generated this request, add XYZ once, and leave rot6d/gripper
+        # absolute. The helper validates shape/finite values and never
+        # integrates actions across the chunk.
+        action_mode = getattr(getattr(self.cfg, "dataloader", None), "action_mode", None)
+        if action_mode == "delta":
+            from openwam.deploy.delta_addback import apply_delta_xyz_addback
+
+            observation = conditions.get("observation") or {}
+            raw_state = observation.get("state") if isinstance(observation, dict) else None
+            if raw_state is None:
+                raise ValueError("action_mode=delta requires the raw absolute EEF state in observation['state']")
+            result["actions"] = apply_delta_xyz_addback(result.get("actions"), raw_state, action_mode="delta")
+
         # Attach optimization stats if profiling
         if self._profile and self._dit_cache is not None:
             result["dit_cache_stats"] = self._dit_cache.stats

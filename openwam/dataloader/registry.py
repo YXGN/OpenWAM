@@ -74,6 +74,7 @@ def list_registered_datasets():
 
 def _register_builtins():
     """Register all built-in dataset classes."""
+    from openwam.dataloader.moon_cake import MoonCakeDataset
     from openwam.dataloader.agibotworld import MultiAgiBotWorldDataset
     from openwam.dataloader.ebench import EBenchDataset
     from openwam.dataloader.interndata_a1 import InternDataA1Dataset
@@ -104,6 +105,7 @@ def _register_builtins():
     # points at a bucket or at the dataset root.
     register_dataset("interndata_a1")(InternDataA1Dataset)
     register_dataset("vlabench")(VLABenchDataset)
+    register_dataset("moon_cake")(MoonCakeDataset)
 
 
 _register_builtins()

@@ -1,0 +1,16 @@
+type: moon_cake
+# Required at launch; no machine-specific path is embedded in this profile.
+dataset_dir: null
+normalization_stats_path: null
+action_mode: eef
+unify_action: true
+unify_action_map: ["0-9", "34-43"]
+normalize_mode: min-max
+num_frames: 33
+video_stride: 4
+window_stride: 1
+height: 384
+width: 320
+multiview: true
+split: train
+enable_action_supervision: true
