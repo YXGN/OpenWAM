@@ -278,14 +278,20 @@ Optimization fields are in the same deploy YAML:
 optimization:
   # Decode and cache
   decode_video: false                  # skip VAE decode when only actions are needed
+  inference_fast_path:
+    enabled: true                      # static indices, request context/KV reuse, and Wan joint MoT CUDA Graph
+  cuda_graph:
+    enabled: true                      # fixed-shape Wan joint MoT graph; independent ablation switch
+  request_context_cache:
+    enabled: true                      # request-local text/proprio features and per-layer K/V reuse
   dit_cache:
-    enabled: true                      # reuse similar video velocity predictions
+    enabled: false                     # legacy velocity cache; independent from inference_fast_path
     cosine_threshold: 0.99              # similarity threshold for a cache hit
     max_skips: 3                        # maximum consecutive skipped video forwards
 
   # Compile architecture-specific paths
   compile:
-    enabled: true                      # compile fixed-shape paths
+    enabled: false                     # legacy compile paths; independent from inference_fast_path
     self_attn: {torch_mode: default, dynamic: false}
     cross_attn: {torch_mode: default, dynamic: false}
     idm: {torch_mode: reduce-overhead, dynamic: false}
@@ -295,4 +301,14 @@ optimization:
   prompt_embed_cache: {enabled: true, maxsize: 32}
 ~~~
 
-Compilation can add first-request warm-up latency. Source code: `scripts/train.py`, `openwam/train/openwam_trainer.py`, `scripts/deploy.py`, and `openwam/deploy/`.
+`inference_fast_path.enabled` 默认是 `true`，控制本轮新增的推理优化：inactive-action 静态索引、请求内 text/proprio 准备与逐层 K/V 复用，以及 Wan joint MoT CUDA Graph。可单独关闭子项做消融；在随附 `compile`/`dit_cache` 均关闭的默认配置下，关闭整个组可回到 eager 路径：
+
+~~~yaml
+optimization:
+  inference_fast_path:
+    enabled: false
+~~~
+
+`cuda_graph` 固定于捕获时的 device、dtype、tensor shape/stride 和 attention-mask 模式。模型重载或 device/dtype 迁移会清除已捕获的图。不支持的 architecture 或 layout 会报告原 eager 路径；捕获期间的运行错误会直接上抛。通过 `architecture._mot_cuda_graph_runner.status()` 查看 `captured`、`capture_count`、`replay_count`、`last_backend`、`reason` 和 `signature`；仅查看配置不能证明图已生效。这些选项不新增依赖，并保持 denoising step 数、原有精度、attention mask 和归一化行为不变。
+
+旧的 `dit_cache` 和 `compile` 选项保持独立，默认是 `false`，需要时再显式开启。`compile` 与 CUDA Graph 不能同时启用；试用 `compile` 时需将 `cuda_graph.enabled: false`（也可关闭 `inference_fast_path` 总开关）。Compilation 可能增加首次请求的 warm-up 延迟。Source code: `scripts/train.py`, `openwam/train/openwam_trainer.py`, `scripts/deploy.py`, and `openwam/deploy/`.

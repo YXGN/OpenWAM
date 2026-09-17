@@ -72,6 +72,7 @@ class ActionDiTState:
     action_freqs: torch.Tensor  # 1D RoPE frequencies for action positions
     context: Optional[torch.Tensor] = None  # (B, T_context, dim), action-projected raw text/proprio context
     context_mask: Optional[torch.Tensor] = None  # (B, T_context) or (B, T_action, T_context), True means attendable
+    context_kv: Optional[tuple[tuple[torch.Tensor, torch.Tensor], ...]] = None
 
 
 class ActionSelfAttention(nn.Module):
@@ -159,10 +160,25 @@ class BridgeCrossAttention(nn.Module):
         self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
         self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
 
-    def forward(self, x_action: torch.Tensor, x_video: torch.Tensor, ctx_mask: Optional[torch.Tensor] = None):
+    def project_context_kv(self, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project video/context features to the exact K/V representation used by attention."""
+        k = self.norm_k(self.k(context))
+        v = self.v(context)
+        return k, v
+
+    def forward(
+        self,
+        x_action: torch.Tensor,
+        x_video: torch.Tensor,
+        ctx_mask: Optional[torch.Tensor] = None,
+        *,
+        projected_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ):
         q = self.norm_q(self.q(x_action))
-        k = self.norm_k(self.k(x_video))
-        v = self.v(x_video)
+        if projected_kv is None:
+            k, v = self.project_context_kv(x_video)
+        else:
+            k, v = projected_kv
 
         q = rearrange(q, "b s (n d) -> b n s d", n=self.num_heads)
         k = rearrange(k, "b s (n d) -> b n s d", n=self.num_heads)
@@ -717,6 +733,8 @@ class ActionDiT(ActionDiTBackbone):
         *,
         context: Optional[torch.Tensor] = None,
         context_mask: Optional[torch.Tensor] = None,
+        prepared_context: Optional[tuple[torch.Tensor, Optional[torch.Tensor]]] = None,
+        context_kv: Optional[tuple[tuple[torch.Tensor, torch.Tensor], ...]] = None,
         use_gradient_checkpointing: bool = False,  # noqa: ARG002 — driver handles ckpt itself
         use_gradient_checkpointing_offload: bool = False,  # noqa: ARG002
     ) -> "ActionState":
@@ -731,16 +749,31 @@ class ActionDiT(ActionDiTBackbone):
         action_context = None
         action_context_mask = None
         if self.variant in _MOT_VARIANTS:
-            if context is None:
-                raise ValueError("ActionDiT.prepare_state requires raw context for variant='joint_self_attn' or 'idm'.")
-            action_context, action_context_mask = self._prepare_context(
-                context,
-                context_mask,
-                batch_size=noisy_actions.shape[0],
-                seq_len=x.shape[1],
-                dtype=x.dtype,
-                device=x.device,
-            )
+            if prepared_context is None:
+                if context is None:
+                    raise ValueError(
+                        "ActionDiT.prepare_state requires raw context for variant='joint_self_attn' or 'idm'."
+                    )
+                action_context, action_context_mask = self._prepare_context(
+                    context,
+                    context_mask,
+                    batch_size=noisy_actions.shape[0],
+                    seq_len=x.shape[1],
+                    dtype=x.dtype,
+                    device=x.device,
+                )
+            else:
+                action_context, action_context_mask = prepared_context
+                if action_context is None or action_context.ndim != 3:
+                    raise ValueError(
+                        "prepared_context embedding must have shape [B, L, dim], "
+                        f"got {None if action_context is None else tuple(action_context.shape)}"
+                    )
+                if action_context.shape[0] != noisy_actions.shape[0]:
+                    raise ValueError(
+                        "prepared_context embedding batch size "
+                        f"({action_context.shape[0]}) must match actions batch size ({noisy_actions.shape[0]})"
+                    )
 
         payload = ActionDiTState(
             x_action=x,
@@ -749,6 +782,7 @@ class ActionDiT(ActionDiTBackbone):
             action_freqs=action_freqs,
             context=action_context,
             context_mask=action_context_mask,
+            context_kv=context_kv,
         )
         return ActionState(
             action_latents=noisy_actions,
@@ -863,7 +897,13 @@ class ActionDiT(ActionDiTBackbone):
                         "ActionDiTState.context_mask must be [B, L], [B, T_action, L], "
                         f"or broadcastable [B, heads, T_action, L], got {tuple(text_mask.shape)}"
                     )
-            x = x + block.cross_attn(block.context_attn_norm(x), payload.context, ctx_mask=text_mask)
+            projected_kv = payload.context_kv[layer_id] if payload.context_kv is not None else None
+            x = x + block.cross_attn(
+                block.context_attn_norm(x),
+                payload.context,
+                ctx_mask=text_mask,
+                projected_kv=projected_kv,
+            )
         mlp_input = block.ffn_norm(x) * (1 + scale_mlp) + shift_mlp
         x = block.gate(x, gate_mlp, block.ffn(mlp_input))
 
