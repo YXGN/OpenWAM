@@ -1,0 +1,22 @@
+# 6 x A100 80GB recipe. Inherit the same official model/optimizer/data settings.
+# Six-way ZeRO-2 holds more optimizer state per GPU than the eight-way recipe.
+defaults:
+  - train_nero_8gpu
+  - _self_
+
+training:
+  output_path: outputs/nero_multitask_6gpu
+  # Global batch = 6 * 16 * 1 = 96 (not the eight-GPU recipe's 128).
+  # 821344 windows => 8556 updates/epoch => 42780 updates over 5 epochs.
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  num_epochs: 5
+  max_steps: null
+  # Keep the official LR; changing GPU count does not justify automatic scaling.
+  learning_rate: 1e-4
+  # 4 workers/rank => 24 workers total.
+  dataset_num_workers: 4
+
+project:
+  wandb:
+    run_name: nero-multitask-6gpu

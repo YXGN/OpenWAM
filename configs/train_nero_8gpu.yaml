@@ -1,0 +1,44 @@
+# 8 x A100 80GB starting recipe; multi-GPU throughput is not yet measured.
+# Inherit the official training/model defaults; replace only the dataset and
+# operational settings below. The local Foundation link is prepared separately.
+defaults:
+  - train
+  - override dataloader: nero_multitask
+  - _self_
+
+training:
+  finetune_ckpt_path: ${oc.env:OPENWAM_FOUNDATION_DIR,models/OpenWAM-Alpha-Pretrain-Foundation-Model}
+  resume_ckpt_path: null
+  output_path: outputs/nero_multitask_8gpu
+
+  # 821344 windows => 6417 updates/epoch => 32085 updates over 5 epochs.
+  debug: false
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  num_epochs: 5
+  max_steps: null
+  learning_rate: 1e-4
+  lr_scheduler: cosine
+  warmup_ratio: 0.05
+  lr_min_ratio: 0.01
+
+  mixed_precision: bf16
+  zero_stage: 2
+  offload_optimizer_device: none
+  initialize_model_on_cpu: false
+  use_gradient_checkpointing: true
+  use_gradient_checkpointing_offload: false
+  bound_optimizer_groups: false
+
+  # 32 workers across 8 ranks; compare against 8/rank in the real GPU benchmark.
+  dataset_num_workers: 4
+  save_steps: 2000
+  save_full_states_for_resume: true
+  keep_last_k_ckpts: 2
+  # Existing trainer drops full states on normal completion; see recipe guide.
+
+project:
+  seed: 42
+  wandb:
+    project: openwam-nero
+    run_name: nero-multitask-8gpu
