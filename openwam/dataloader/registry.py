@@ -74,13 +74,14 @@ def list_registered_datasets():
 
 def _register_builtins():
     """Register all built-in dataset classes."""
-    from openwam.dataloader.moon_cake import MoonCakeDataset
     from openwam.dataloader.agibotworld import MultiAgiBotWorldDataset
     from openwam.dataloader.ebench import EBenchDataset
     from openwam.dataloader.interndata_a1 import InternDataA1Dataset
     from openwam.dataloader.libero import LiberoDataset
     from openwam.dataloader.mixture import MixtureDataset
+    from openwam.dataloader.moon_cake import MoonCakeDataset
     from openwam.dataloader.muka_franka import MukaFrankaDataset
+    from openwam.dataloader.nero_multitask import NeroMultitaskDataset
     from openwam.dataloader.oxe_droid import OxeDroidDataset
     from openwam.dataloader.robocasa365 import MultiTaskRoboCasa365Dataset
     from openwam.dataloader.robocasa_gr1 import MultiRoboCasaGR1Dataset
@@ -106,6 +107,7 @@ def _register_builtins():
     register_dataset("interndata_a1")(InternDataA1Dataset)
     register_dataset("vlabench")(VLABenchDataset)
     register_dataset("moon_cake")(MoonCakeDataset)
+    register_dataset("nero_multitask")(NeroMultitaskDataset)
 
 
 _register_builtins()

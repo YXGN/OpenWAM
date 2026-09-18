@@ -321,6 +321,18 @@ class JointInferenceEngine(BaseInferenceEngine):
         if proprio is None:
             observation = conditions.get("observation") or {}
             proprio = observation.get("state") if isinstance(observation, dict) else None
+        action_mode = getattr(getattr(self.cfg, "dataloader", None), "action_mode", None)
+        relative_anchor = None
+        if action_mode == "eef_relative":
+            import numpy as np
+
+            if proprio is None:
+                raise ValueError("eef_relative requires the generating observation's absolute EEF20 state")
+            # Snapshot before normalization and generation; async execution must
+            # never restore this chunk against a newer observation.
+            relative_anchor = np.asarray(proprio, dtype=np.float32).reshape(-1).copy()
+            if relative_anchor.shape != (20,) or not np.isfinite(relative_anchor).all():
+                raise ValueError("eef_relative requires finite absolute EEF20 proprio")
         if proprio is not None:
             proprio = self.architecture.normalize_deploy_proprio(proprio)
 
@@ -359,12 +371,17 @@ class JointInferenceEngine(BaseInferenceEngine):
         )
         result = self.architecture.generate(**generate_kwargs)
 
+        if relative_anchor is not None:
+            from openwam.dataloader.utils.nero import absolute_actions
+
+            # generate has already gathered 80D -> 20D and inverse-normalized.
+            result["actions"] = absolute_actions(result.get("actions"), relative_anchor)
+
         # MoonCake delta outputs are reconstructed after the normalizer's
         # unify-gather and denormalization. Use the exact raw state that
         # generated this request, add XYZ once, and leave rot6d/gripper
         # absolute. The helper validates shape/finite values and never
         # integrates actions across the chunk.
-        action_mode = getattr(getattr(self.cfg, "dataloader", None), "action_mode", None)
         if action_mode == "delta":
             from openwam.deploy.delta_addback import apply_delta_xyz_addback
 

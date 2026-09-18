@@ -85,12 +85,14 @@ class ObsPreprocessor:
         img_height: int,
         img_width: int,
         requires_proprio: bool = False,
+        require_all_cameras: bool = False,
     ):
         self.multiview = bool(multiview)
         self.camera_layout = list(camera_layout)
         self.img_height = int(img_height)
         self.img_width = int(img_width)
         self.requires_proprio = bool(requires_proprio)
+        self.require_all_cameras = bool(require_all_cameras)
 
     @classmethod
     def from_cfg(cls, cfg, engine=None) -> "ObsPreprocessor":
@@ -115,6 +117,9 @@ class ObsPreprocessor:
             img_height=int(_h if _h is not None else 384),
             img_width=int(_w if _w is not None else 320),
             requires_proprio=_resolve_requires_proprio(cfg, engine),
+            require_all_cameras=(
+                bool(getattr(dl, "require_all_cameras", False)) or getattr(dl, "action_mode", None) == "eef_relative"
+            ),
         )
 
     def preprocess(self, obs: dict) -> dict:
@@ -161,6 +166,10 @@ class ObsPreprocessor:
             )
 
         imgs = obs["images"]
+        if self.require_all_cameras:
+            missing = [key for key in ("head_camera", "left_wrist_camera", "right_wrist_camera") if imgs.get(key) is None]
+            if missing:
+                raise ObsValidationError(f"This checkpoint requires all three cameras; missing {missing}")
         head_raw = imgs.get("head_camera")
         if head_raw is None:
             raise ObsValidationError(

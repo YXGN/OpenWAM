@@ -1,0 +1,25 @@
+type: nero_multitask
+dataset_dir: /data2/xieweize/project/dataset/lerobot_v2/nero_multitask_mooncake_hammer_charger_408_fk_lerobot_v2
+normalization_stats_path: outputs/nero_multitask_data/normalization_stats.npy
+
+# Anchor-relative body XYZ, R_anchor.T @ R_future as rot6d; absolute gripper.
+# Proprio remains absolute. Deployment restores absolute EEF20 once per chunk.
+action_mode: eef_relative
+unify_action: true
+unify_action_map: ["0-9", "34-43"]
+unify_state_map: null
+normalize_mode: min-max
+num_frames: 33
+video_stride: 4
+window_stride: 1
+
+height: 384
+width: 320
+multiview: true
+require_all_cameras: true
+camera_layout:
+  - observation.images.head_fpv
+  - observation.images.left_hand
+  - observation.images.right_hand
+color_jitter:
+  enabled: false

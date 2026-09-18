@@ -248,6 +248,13 @@ def repr_contract_from_cfg(cfg: DictConfig) -> dict:
     contract = {
         "representation": str(OmegaConf.select(cfg, "dataloader.action_mode", default="joint")),
     }
+    if contract["representation"] == "eef_relative":
+        contract.update({
+            "representation": "eef",
+            "model_representation": "eef_relative",
+            "output_frame": "absolute_body_gripper_flange",
+            "gripper_convention": "opening_width_metres_0_to_0.1",
+        })
     if dims:
         contract["binary_action_dims"] = [int(d) for d in dims]
     if gripper_convention is not None:
@@ -273,6 +280,18 @@ def _build_inner_normalizer(cfg: DictConfig, ckpt_dir: str):
     dl = OmegaConf.select(cfg, "dataloader", default=None)
     norm_mode = OmegaConf.select(cfg, "dataloader.normalize_mode", default=None)
     action_mode = OmegaConf.select(cfg, "dataloader.action_mode", default="joint")
+    if action_mode == "eef_relative":
+        from openwam.dataloader.utils.nero import UNIFY_MAP
+        from openwam.dataloader.utils.unify_action import parse_unify_spec
+
+        action_map = OmegaConf.select(cfg, "dataloader.unify_action_map", default=None)
+        state_map = OmegaConf.select(cfg, "dataloader.unify_state_map", default=None)
+        if norm_mode != "min-max" or not OmegaConf.select(cfg, "dataloader.unify_action", default=False):
+            raise ValueError("eef_relative deployment requires min-max normalization and unified actions")
+        if action_map is None or parse_unify_spec(action_map).tolist() != UNIFY_MAP:
+            raise ValueError("eef_relative deployment requires the canonical EEF slot map")
+        if state_map is not None and parse_unify_spec(state_map).tolist() != UNIFY_MAP:
+            raise ValueError("eef_relative deployment requires the canonical proprio slot map")
     if dl is None or norm_mode in (None, "", "none", "null"):
         # binary_action_dims / base_proprio='global_pose' stay fully consistent here: with
         # normalization off the model trains and serves in RAW space for every dim (binary targets
@@ -318,6 +337,12 @@ def _build_inner_normalizer(cfg: DictConfig, ckpt_dir: str):
         )
 
     mode_stats = load_mode_stats(stats_path, action_mode)
+    if action_mode == "eef_relative":
+        from openwam.dataloader.utils.nero import CONTRACT
+
+        payload = np.load(stats_path, allow_pickle=True).item()
+        if payload.get("metadata", {}).get("contract") != CONTRACT or f"{action_mode}_state" not in payload:
+            raise ValueError("eef_relative requires matching Nero action and absolute-proprio statistics")
     if mode_stats is None:
         raise KeyError(
             f"[normalizer] Stats file {stats_path} has no '{action_mode}' entry (its keys are written from the "
