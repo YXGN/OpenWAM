@@ -1,0 +1,23 @@
+# Wan/Nero training stack: preserve the versions used in the verified smoke.
+# Python is independently installed in .cache/python; never use system site-packages.
+torch==2.7.1+cu126
+torchvision==0.22.1+cu126
+accelerate==1.12.0
+deepspeed==0.18.5
+transformers==5.16.1
+diffusers==0.40.0
+numpy==1.26.4
+pandas==2.3.3
+pyarrow==22.0.0
+av==15.1.0
+opencv-python==4.11.0.86
+modelscope==1.34.0
+hydra-core==1.3.2
+omegaconf==2.3.0
+safetensors==0.8.0
+timm==1.0.29
+huggingface-hub==1.30.0
+tokenizers==0.23.2
+packaging==25.0
+ninja==1.13.0
+setuptools==80.10.2

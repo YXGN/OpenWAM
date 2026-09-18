@@ -1,0 +1,9 @@
+# Compile with envs/constraints-cu126.txt and uv --torch-backend cu126.
+-e .[dev]
+pip==26.1.2
+setuptools==80.10.2
+wheel==0.45.1
+packaging==25.0
+ninja==1.13.0
+# DeepSpeed's build metadata can omit this when built without GPU discovery.
+nvidia-ml-py>=12
