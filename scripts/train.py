@@ -71,6 +71,14 @@ def _build_accelerator(cfg: DictConfig):
     grad_accum = int(t.gradient_accumulation_steps)
     max_grad_norm = getattr(t, "max_grad_norm", None)
     mixed_precision = str(t.mixed_precision)
+    if bool(t.get("zero2_cached_grad_nodes", False)):
+        if int(t.zero_stage) != 2:
+            raise ValueError("training.zero2_cached_grad_nodes requires zero_stage=2")
+        from openwam.train.utils.deepspeed_grad_counter import install_zero2_grad_counter
+
+        install_zero2_grad_counter(audit=bool(t.get("zero2_grad_counter_audit", False)))
+    elif bool(t.get("zero2_grad_counter_audit", False)):
+        raise ValueError("zero2_grad_counter_audit requires zero2_cached_grad_nodes=true")
     if os.environ.get("LOCAL_RANK", "0") == "0":
         logger.info("mixed_precision = %s (from cfg.training.mixed_precision)", mixed_precision)
 
