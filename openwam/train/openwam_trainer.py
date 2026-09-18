@@ -274,6 +274,10 @@ class OpenWAMTrainer:
             global_step, opt_step, start_epoch, skip_first = self.resume_if_configured(
                 resume_state_dir, dataloader, grad_accum
             )
+            if num_epochs is not None:
+                total_steps = len(dataloader) * num_epochs + int(t.get("resume_data_step_offset", 0))
+                if max_steps:
+                    total_steps = min(total_steps, max_steps)
             already_done = (num_epochs is not None and start_epoch >= num_epochs) or (
                 max_steps and global_step >= max_steps
             )
@@ -551,7 +555,12 @@ class OpenWAMTrainer:
         # Align global_step to the grad_accum boundary skip was floored to, then derive
         # opt_step from it — otherwise floored-off batches re-train and per-step seeds
         # (keyed on global_step) drift. No-op at grad_accum=1.
-        start_epoch, skip, global_step = compute_resume_position(global_step, len(dataloader), grad_accum)
+        start_epoch, skip, global_step = compute_resume_position(
+            global_step,
+            len(dataloader),
+            grad_accum,
+            data_step_offset=int(self.cfg.training.get("resume_data_step_offset", 0)),
+        )
         opt_step = global_step // grad_accum
         if is_main:
             logger.info(

@@ -317,7 +317,9 @@ def find_latest_accel_state(run_dir: str) -> str | None:
 # --- Resume position (pure math) ---
 
 
-def compute_resume_position(global_step: int, batches_per_epoch: int, grad_accum: int) -> tuple[int, int, int]:
+def compute_resume_position(
+    global_step: int, batches_per_epoch: int, grad_accum: int, *, data_step_offset: int = 0
+) -> tuple[int, int, int]:
     """Map a resumed ``global_step`` to ``(start_epoch, skip_first_batches, aligned_global_step)``.
 
     ``skip`` is floored to a grad_accum boundary so the first optimizer step after
@@ -325,12 +327,17 @@ def compute_resume_position(global_step: int, batches_per_epoch: int, grad_accum
     back to that same boundary so the floored-off batches are not re-trained and the
     per-step seed (keyed on global_step) stays matched. No-op at grad_accum=1.
     """
+    # A topology/batch migration can retain optimizer step numbers while the
+    # already-consumed data corresponds to a different number of new batches.
+    data_step = global_step - data_step_offset
+    if data_step < 0 or data_step_offset % max(grad_accum, 1):
+        raise ValueError("Invalid migrated data-step offset")
     batches_per_epoch = max(batches_per_epoch, 1)
-    start_epoch = global_step // batches_per_epoch
-    skip = global_step % batches_per_epoch
+    start_epoch = data_step // batches_per_epoch
+    skip = data_step % batches_per_epoch
     if grad_accum > 1 and skip % grad_accum != 0:
         skip = (skip // grad_accum) * grad_accum
-    aligned_global_step = start_epoch * batches_per_epoch + skip
+    aligned_global_step = start_epoch * batches_per_epoch + skip + data_step_offset
     return start_epoch, skip, aligned_global_step
 
 

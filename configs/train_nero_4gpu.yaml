@@ -1,0 +1,20 @@
+# Four A100 80GB GPUs. Batch32 is being validated before formal resume.
+defaults:
+  - train_nero_6gpu
+  - _self_
+
+training:
+  finetune_ckpt_path: null
+  resume_ckpt_path: outputs/nero_multitask_4gpu/resume_step4000
+  output_path: outputs/nero_multitask_4gpu
+  batch_size: 32
+  gradient_accumulation_steps: 1
+  # 4000 old updates consumed 384000 windows = 3000 new global batches.
+  resume_data_step_offset: 1000
+  offload_optimizer_device: none
+  zero2_cached_grad_nodes: true
+  initialize_model_on_cpu: true
+
+project:
+  wandb:
+    run_name: nero-multitask-4gpu-resume4000
