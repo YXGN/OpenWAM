@@ -194,8 +194,23 @@ class CrossAttention(nn.Module):
 
         self.attn = AttentionModule(self.num_heads)
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor, ctx_mask: Optional[torch.Tensor] = None):
+    def project_context_kv(self, ctx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project text context to the exact K/V representation used by attention."""
+        k = self.norm_k(self.k(ctx))
+        v = self.v(ctx)
+        return k, v
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        ctx_mask: Optional[torch.Tensor] = None,
+        *,
+        projected_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ):
         if self.has_image_input:
+            if projected_kv is not None:
+                raise ValueError("projected_kv is unsupported when CrossAttention has image input")
             img = y[:, :257]
             ctx = y[:, 257:]
             if ctx_mask is not None:
@@ -203,8 +218,10 @@ class CrossAttention(nn.Module):
         else:
             ctx = y
         q = self.norm_q(self.q(x))
-        k = self.norm_k(self.k(ctx))
-        v = self.v(ctx)
+        if projected_kv is None:
+            k, v = self.project_context_kv(ctx)
+        else:
+            k, v = projected_kv
         x = self.attn(q, k, v, attn_mask=ctx_mask)
         if self.has_image_input:
             k_img = self.norm_k_img(self.k_img(img))

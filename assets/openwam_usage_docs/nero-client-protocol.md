@@ -27,6 +27,9 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 每次请求直接调用一次 `JointInferenceEngine.generate`。服务端没有逐步动作队列。
 10 步同步去噪、CFG=1、无 DiT 近似缓存、不解码预测视频，保留冻结 T5 prompt 缓存。
 这与已审计的开环评估基线一致；没有改模型、采样算法或训练权重。
+现已显式开启静态动作索引、请求内 context/KV 复用和联合 Transformer CUDA Graph。
+优化范围与等价验证见[推理性能说明](nero-inference-performance.md)。追加
+`--disable-inference-fast-path` 可对照原 eager 路径；首次推理需要图预热和捕获。
 
 ### 终端日志
 
@@ -35,9 +38,9 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 例如（数字仅为格式示例，不是本次实测）：
 
 ```text
-14:20:01 INFO infer id='8d249930aecd' prompt=P1 infer_ms=800.0 server_ms=825.0 text='Pick up the hammer.'
-14:20:02 INFO infer id='a115567199c2' prompt=P1 infer_ms=780.0 server_ms=803.0
-14:20:04 INFO infer id='e97ff41ef1c9' prompt=P2 infer_ms=850.0 server_ms=877.0 text='Pick up the charger.'
+14:20:01 INFO infer id='8d249930aecd' prompt=P1 infer_ms=460.0 server_ms=485.0 backend=cuda_graph text='Pick up the hammer.'
+14:20:02 INFO infer id='a115567199c2' prompt=P1 infer_ms=450.0 server_ms=473.0 backend=cuda_graph
+14:20:04 INFO infer id='e97ff41ef1c9' prompt=P2 infer_ms=510.0 server_ms=537.0 backend=cuda_graph text='Pick up the charger.'
 ```
 
 - `id`：客户端 request_id 的前 12 个字符，便于对照请求。
@@ -49,6 +52,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 - `server_ms`：进入服务请求处理至响应数据构造完成，包含等待引擎锁、PNG 解码、
   观测预处理和上述推理；不含 HTTP 请求体接收/JSON 解析、响应 JSON 编码/发送、网络和客户端处理。
   响应字段 `server_total_sec` 同步采用该范围（秒）；旧版本仅从引擎调用前开始计时。
+- `backend`：本次最后一个去噪步实际使用 `cuda_graph` 或 `eager`，不只是配置开关。
 
 成功 `/infer` 不再重复打印 HTTP 200 访问日志；握手、重置与失败访问日志保留。
 日志改动不增加 GPU 同步或额外模型调用。已运行的进程需停止客户端策略并重启服务端，
@@ -107,8 +111,9 @@ identity 包含实际 checkpoint 名称、模型内部表示及 checkpoint/confi
 新旧协议的观测/执行设置不同，进入或离开 `openwam_nero` 需新建 Runtime。
 相对/绝对权重切换不需要更换协议或 Runtime，只需停止、重连新模型、再启动。
 
-当前是同步 receding-horizon，动作耗尽后请求新块；约 0.8 秒的生成延迟大于
-32/60≈0.533 秒动作块跨度，会有等待区间。现有调度会记录饥饿/迟到，不通过改变
+当前是同步 receding-horizon，动作耗尽后请求新块，仍会有等待区间。原 eager 基线
+约 0.8 秒；新增优化的实测见推理性能说明。即使生成时间低于 32/60≈0.533 秒，
+也不会自动变成推理与动作执行重叠的调度。现有调度会记录饥饿/迟到，不通过改变
 动作时间单位、补未来图像或伪造动作来消除延迟。此版不承诺连续实时闭环控制。
 
 ## 可重复验证

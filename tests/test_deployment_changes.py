@@ -93,17 +93,25 @@ class TestDeploymentYaml:
 
         cfg = self._load()
         assert OmegaConf.select(cfg, "optimization.compile") is not None
-        assert OmegaConf.select(cfg, "optimization.compile.enabled") is True
+        assert OmegaConf.select(cfg, "optimization.compile.enabled") is False
         assert OmegaConf.select(cfg, "optimization.compile.self_attn.torch_mode") == "default"
         assert OmegaConf.select(cfg, "optimization.compile.self_attn.dynamic") is False
         assert OmegaConf.select(cfg, "optimization.compile.cross_attn.torch_mode") == "default"
         assert OmegaConf.select(cfg, "optimization.compile.cross_attn.dynamic") is False
 
+    def test_inference_fast_path_defaults(self):
+        from omegaconf import OmegaConf
+
+        cfg = self._load()
+        assert OmegaConf.select(cfg, "optimization.inference_fast_path.enabled") is True
+        assert OmegaConf.select(cfg, "optimization.cuda_graph.enabled") is True
+        assert OmegaConf.select(cfg, "optimization.request_context_cache.enabled") is True
+
     def test_optimization_dit_cache_enabled(self):
         from omegaconf import OmegaConf
 
         cfg = self._load()
-        assert OmegaConf.select(cfg, "optimization.dit_cache.enabled") is True
+        assert OmegaConf.select(cfg, "optimization.dit_cache.enabled") is False
 
     def test_inference_execution_defaults(self):
         from omegaconf import OmegaConf
@@ -517,7 +525,15 @@ class TestJointEngineCompileFlags:
         engine._architecture_generate_warned_dropped_kwargs = set()
         return engine
 
-    def _make_engine(self, compile_enabled=False, return_arch=False, prompt_cache_cfg=None):
+    def _make_engine(
+        self,
+        compile_enabled=False,
+        return_arch=False,
+        prompt_cache_cfg=None,
+        fast_path_enabled=False,
+        graph_enabled=None,
+        request_cache_enabled=None,
+    ):
         from omegaconf import OmegaConf
 
         from openwam.deploy.engine import JointInferenceEngine
@@ -534,6 +550,11 @@ class TestJointEngineCompileFlags:
                 },
                 "optimization": {
                     "decode_video": True,
+                    "inference_fast_path": {"enabled": fast_path_enabled},
+                    "cuda_graph": {"enabled": fast_path_enabled if graph_enabled is None else graph_enabled},
+                    "request_context_cache": {
+                        "enabled": fast_path_enabled if request_cache_enabled is None else request_cache_enabled
+                    },
                     "compile": {
                         "enabled": compile_enabled,
                         "self_attn": {"torch_mode": "reduce-overhead", "dynamic": False},
@@ -564,6 +585,19 @@ class TestJointEngineCompileFlags:
         _engine, mock_compile, arch = self._make_engine(return_arch=True)
         mock_compile.assert_not_called()
         arch.apply_compile_optimizations.assert_called_once()
+
+    def test_master_fast_path_false_disables_new_optimizations(self):
+        engine, _mock_compile, arch = self._make_engine(return_arch=True)
+        assert arch._inference_fast_path_enabled is False
+        arch.apply_request_context_cache_optimization.assert_called_once_with(enabled=False)
+        arch.apply_cuda_graph_optimization.assert_called_once_with(enabled=False)
+
+    def test_master_fast_path_true_enables_supported_hooks(self):
+        engine, _mock_compile, arch = self._make_engine(fast_path_enabled=True, return_arch=True)
+        assert arch._inference_fast_path_enabled is True
+        arch.apply_request_context_cache_optimization.assert_called_once_with(enabled=True)
+        arch.apply_cuda_graph_optimization.assert_called_once_with(enabled=True)
+        assert engine._dit_cache is None
 
     def test_compile_enabled_true_is_passed_to_architecture(self):
         from omegaconf import OmegaConf

@@ -171,6 +171,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         self.action_backbone: Optional["AnyActionBackbone"] = None
         self._device = torch.device("cuda")
         self._dtype = torch.bfloat16
+        self._inference_fast_path_enabled = False
 
         # Forward-time training runtime flags. Trainer calls
         # ``set_training_runtime`` once during construction so ``prepare_inputs``
@@ -1515,6 +1516,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
         # into the next denoising step.
         inactive_action_noise = None
         inactive_action_dims = self._resolve_inactive_action_dims(active_action_mask, device)
+        use_inference_fast_path = bool(getattr(self, "_inference_fast_path_enabled", False))
+        inactive_action_indices = None
+        if use_inference_fast_path and inactive_action_dims is not None:
+            inactive_action_indices = torch.nonzero(inactive_action_dims, as_tuple=True)[0]
 
         num_train_ts_v = float(self.video_scheduler.num_train_timesteps)
         num_train_ts_a = float(self.action_scheduler.num_train_timesteps)
@@ -1585,15 +1590,24 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 inputs_shared["latents"] = new_latents
 
             if action_stepping and action_noise_pred is not None:
-                if inactive_action_dims is not None and inactive_action_noise is None:
+                if inactive_action_noise is None and (
+                    inactive_action_indices is not None or inactive_action_dims is not None
+                ):
                     sigma_a_f = float(sigma_a)
                     if sigma_a_f <= 0.0:
                         raise ValueError("Cannot initialize inactive action noise from a non-positive sigma.")
-                    inactive_action_noise = action_latents[..., inactive_action_dims].detach().clone() / sigma_a_f
+                    if inactive_action_indices is not None:
+                        inactive_action_noise = (
+                            action_latents.index_select(-1, inactive_action_indices).detach().clone() / sigma_a_f
+                        )
+                    else:
+                        inactive_action_noise = action_latents[..., inactive_action_dims].detach().clone() / sigma_a_f
                 action_latents = self.action_scheduler.flow_step(
                     action_noise_pred, sigma_a, sigma_a_next, action_latents
                 )
-                if inactive_action_dims is not None:
+                if inactive_action_indices is not None:
+                    action_latents.index_copy_(-1, inactive_action_indices, inactive_action_noise * float(sigma_a_next))
+                elif inactive_action_dims is not None:
                     action_latents[..., inactive_action_dims] = inactive_action_noise * float(sigma_a_next)
 
         if profile:

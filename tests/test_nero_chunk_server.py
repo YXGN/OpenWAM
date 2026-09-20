@@ -207,6 +207,21 @@ def test_server_timing_includes_queue_and_preprocessing(bucket, monkeypatch, cap
     assert "infer_ms=200.0 server_ms=270.0" in caplog.records[-1].getMessage()
 
 
+def test_inference_log_reports_actual_graph_backend(bucket, caplog):
+    service, request, _, _ = setup_service(bucket)
+    calls = []
+
+    def status(*, include_signature):
+        calls.append(include_signature)
+        return {"last_backend": "cuda_graph"}
+
+    service.engine.architecture = SimpleNamespace(_mot_cuda_graph_runner=SimpleNamespace(status=status))
+    with caplog.at_level(logging.INFO):
+        service.request("/infer", request)
+    assert calls == [False]
+    assert "backend=cuda_graph" in caplog.records[-1].getMessage()
+
+
 def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucket, caplog):
     service, request, _, outputs = setup_service(bucket)
     server = make_http_server(service, port=0)

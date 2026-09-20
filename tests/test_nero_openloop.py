@@ -109,6 +109,21 @@ def test_reject_semantic_drift(bucket, key, value):
         validate_contract(cfg, stats)
 
 
+def test_nero_fast_path_is_explicit_and_baseline_keeps_same_sampling():
+    enabled = inference_config(10)
+    disabled = inference_config(10, fast_path=False)
+    assert enabled.optimization.inference_fast_path.enabled is True
+    assert enabled.optimization.cuda_graph.enabled is True
+    assert enabled.optimization.request_context_cache.enabled is True
+    assert disabled.optimization.inference_fast_path.enabled is False
+    assert enabled.inference == disabled.inference
+    for cfg in (enabled, disabled):
+        assert cfg.optimization.compile.enabled is False
+        assert cfg.optimization.dit_cache.enabled is False
+        assert cfg.optimization.decode_video is False
+        assert cfg.optimization.prompt_embed_cache.enabled is True
+
+
 def test_recorder_preserves_engine_behavior_and_restores_on_failure(bucket):
     from openwam.deploy.engine import JointInferenceEngine
     from openwam.deploy.server import merge_deploy_cfg

@@ -194,13 +194,16 @@ class NeroChunkService:
             if changed:
                 self._prompt_revision += 1
                 self._logged_prompt = prompt
+            runner = getattr(getattr(self.engine, "architecture", None), "_mot_cuda_graph_runner", None)
+            backend = "eager" if runner is None else runner.status(include_signature=False)["last_backend"]
             # Keep multiline prompts on one log line, without altering model input.
             logging.info(
-                "infer id=%r prompt=P%d infer_ms=%.1f server_ms=%.1f%s",
+                "infer id=%r prompt=P%d infer_ms=%.1f server_ms=%.1f backend=%s%s",
                 request_id[:12],
                 self._prompt_revision,
                 inference_sec * 1000,
                 response["server_total_sec"] * 1000,
+                backend,
                 f" text={prompt!r}" if changed else "",
             )
             return response
@@ -242,7 +245,7 @@ def make_http_server(service, host="127.0.0.1", port=8849):
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def load_service(ckpt_dir, ckpt_name, device="cuda:0"):
+def load_service(ckpt_dir, ckpt_name, device="cuda:0", *, fast_path=True):
     from openwam.deploy.server import build_server_from_config
 
     root = Path(ckpt_dir).resolve()
@@ -256,7 +259,7 @@ def load_service(ckpt_dir, ckpt_name, device="cuda:0"):
         identity[key + "_sha256"] = file_sha256(root / name)
     # Keep the audited 10-step synchronous engine baseline. No RTC, approximate
     # DiT cache, future video conditioning, or extra classifier-free guidance.
-    server = build_server_from_config(inference_config(10), str(root), device, ckpt_name)
+    server = build_server_from_config(inference_config(10, fast_path=fast_path), str(root), device, ckpt_name)
     return NeroChunkService(server.engine, server.cfg, identity)
 
 
@@ -267,15 +270,17 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8849)
+    parser.add_argument("--disable-inference-fast-path", action="store_true", help="Use eager inference for comparison")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
-    service = load_service(args.ckpt_dir, args.ckpt_name, args.device)
+    service = load_service(args.ckpt_dir, args.ckpt_name, args.device, fast_path=not args.disable_inference_fast_path)
     server = make_http_server(service, args.host, args.port)
     logging.info(
-        "ready http://%s:%d checkpoint=%s mode=%s",
+        "ready http://%s:%d checkpoint=%s mode=%s fast_path=%s",
         *server.server_address[:2],
         args.ckpt_dir / args.ckpt_name,
         service.identity["model_representation"],
+        not args.disable_inference_fast_path,
     )
     try:
         server.serve_forever()

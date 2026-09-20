@@ -19,6 +19,7 @@ import torch
 
 from openwam.deploy.denoise_schedule import make_schedule, normalize_denoise_config
 from openwam.model.architectures.base import BaseWAMArchitecture
+from openwam.model.compile_options import as_bool, cfg_get, compile_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,27 @@ class JointInferenceEngine(BaseInferenceEngine):
         """Read cfg.optimization and instantiate optimization components."""
         optimization = getattr(self.cfg, "optimization", None)
 
+        # The master switch controls the new inference fast paths together:
+        # static inactive-action indices, request-local context/KV reuse, and
+        # CUDA Graph MoT. Explicit torch.compile remains independent.
+        fast_path_cfg = getattr(optimization, "inference_fast_path", None) if optimization else None
+        fast_path_enabled = as_bool(cfg_get(fast_path_cfg, "enabled", False), default=False) if fast_path_cfg else False
+        graph_cfg = getattr(optimization, "cuda_graph", None) if optimization else None
+        request_cache_cfg = getattr(optimization, "request_context_cache", None) if optimization else None
+        graph_requested = as_bool(cfg_get(graph_cfg, "enabled", True), default=True) if graph_cfg else True
+        request_cache_requested = (
+            as_bool(cfg_get(request_cache_cfg, "enabled", True), default=True) if request_cache_cfg else True
+        )
+        self.architecture._inference_fast_path_enabled = fast_path_enabled
+        apply_request_cache = getattr(self.architecture, "apply_request_context_cache_optimization", None)
+        if callable(apply_request_cache):
+            apply_request_cache(enabled=fast_path_enabled and request_cache_requested)
+        elif fast_path_enabled and request_cache_requested:
+            logger.info(
+                "request context/KV cache unavailable for architecture %s; keeping original execution",
+                type(self.architecture).__name__,
+            )
+
         # DiT velocity cache
         self._dit_cache = None
         if optimization and getattr(optimization, "dit_cache", None):
@@ -197,11 +219,34 @@ class JointInferenceEngine(BaseInferenceEngine):
                 logger.info("DiT velocity cache enabled (threshold=%.3f)", dc.cosine_threshold)
 
         # torch.compile — ActionDiT, Video DiT, VAE
-        if optimization and getattr(optimization, "compile", None):
+        compile_cfg = getattr(optimization, "compile", None) if optimization else None
+        cuda_graph_cfg = getattr(optimization, "cuda_graph", None) if optimization else None
+        compile_requested = compile_enabled(compile_cfg, default=False, strict=True) if compile_cfg else False
+        cuda_graph_enabled = (
+            fast_path_enabled
+            and graph_requested
+            and (as_bool(cfg_get(cuda_graph_cfg, "enabled", True), default=True) if cuda_graph_cfg else True)
+        )
+        apply_cuda_graph = getattr(self.architecture, "apply_cuda_graph_optimization", None)
+        if cuda_graph_enabled and not callable(apply_cuda_graph):
+            logger.info(
+                "CUDA Graph MoT unavailable for architecture %s; keeping original execution",
+                type(self.architecture).__name__,
+            )
+            cuda_graph_enabled = False
+        if compile_requested and cuda_graph_enabled:
+            raise ValueError("optimization.compile and optimization.cuda_graph cannot both be enabled")
+
+        if compile_cfg:
             try:
-                self.architecture.apply_compile_optimizations(optimization.compile)
+                self.architecture.apply_compile_optimizations(compile_cfg)
             except Exception as e:
                 logger.warning("torch.compile optimization failed, continuing without: %s", e)
+
+        if cuda_graph_enabled:
+            apply_cuda_graph(enabled=True)
+        elif callable(apply_cuda_graph):
+            apply_cuda_graph(enabled=False)
 
         # VAE decode skip
         self._decode_video = True

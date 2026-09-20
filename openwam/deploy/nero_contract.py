@@ -60,13 +60,16 @@ def conditions_from_observation(preprocessor, observation, seed):
     }
 
 
-def inference_config(steps):
+def inference_config(steps, *, fast_path=True):
     if steps < 1:
         raise ValueError("denoise_steps must be positive")
     return OmegaConf.create(
         {
             "inference": {"denoise_steps": steps, "denoise_mode": "sync", "cfg_scale": 1.0},
             "optimization": {
+                "inference_fast_path": {"enabled": fast_path},
+                "cuda_graph": {"enabled": True},
+                "request_context_cache": {"enabled": True},
                 "decode_video": False,
                 "compile": {"enabled": False},
                 "dit_cache": {"enabled": False},

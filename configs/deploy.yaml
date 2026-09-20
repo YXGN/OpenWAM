@@ -25,13 +25,22 @@ inference:
 optimization:
   decode_video: false         # false = skip VAE decode, return video=null (actions-only)
 
+  inference_fast_path:
+    enabled: true              # master switch for static indices, request KV reuse, and CUDA Graph MoT
+
+  cuda_graph:
+    enabled: true              # fixed-shape MoT CUDA Graph when the architecture supports it
+
+  request_context_cache:
+    enabled: true              # request-local prepared text/proprio context and per-layer K/V
+
   dit_cache:
-    enabled: true            # DiT velocity cache: skip video DiT when prediction is stable
+    enabled: false           # DiT velocity cache: skip video DiT when prediction is stable
     cosine_threshold: 0.99    # Skip if cosine similarity to previous prediction exceeds this
     max_skips: 3              # Max consecutive skips before forcing recompute
 
   compile:
-    enabled: true             # true enables architecture-specific compile fast paths
+    enabled: false            # explicit diagnostic choice; independent from inference_fast_path
     self_attn:
       torch_mode: default
       dynamic: false           # Fixed-shape MoT-loop compile for dual_system_self_attn

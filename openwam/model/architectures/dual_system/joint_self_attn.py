@@ -49,6 +49,15 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
         self._mot_driver: DualSystemMoTDriver | None = None
         self._mot_driver_kwargs: dict = {}
         self._compiled_mot_run_joint_loop: Optional[Callable[..., Tuple[object, object]]] = None
+        self._compile_optimization_requested = False
+        self._mot_cuda_graph_runner = None
+        self._request_context_cache_enabled = False
+        self._request_context_cache_status = {
+            "enabled": False,
+            "last_reason": "disabled",
+            "requests_prepared": 0,
+            "cache_hits": 0,
+        }
         if cfg is None:
             return
         if self.video_backbone is not None:
@@ -124,6 +133,9 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
             self.action_backbone,
             **self._mot_driver_kwargs,
         )
+        if self._mot_cuda_graph_runner is not None:
+            self._mot_cuda_graph_runner.clear("mot_driver_rebuilt")
+            self._mot_cuda_graph_runner.driver = self._mot_driver
         return self._mot_driver
 
     @property
@@ -134,8 +146,11 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
     def apply_compile_optimizations(self, compile_cfg) -> None:
         """Compile the eval-time MoT joint loop when requested."""
 
-        super().apply_compile_optimizations(compile_cfg)
         self._compiled_mot_run_joint_loop = None
+        self._compile_optimization_requested = compile_enabled(compile_cfg, default=False, strict=True)
+        if self._compile_optimization_requested and self._mot_cuda_graph_runner is not None:
+            raise ValueError("dual_system_self_attn cannot enable torch.compile and CUDA Graph MoT together")
+        super().apply_compile_optimizations(compile_cfg)
         if not compile_enabled(compile_cfg, default=False, strict=True):
             return
 
@@ -166,6 +181,98 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
             return
         logger.info("Enabled dual self-attn MoT compile with torch.compile kwargs=%s", kwargs)
 
+    def apply_cuda_graph_optimization(self, enabled: bool = True) -> None:
+        """Enable the explicit fixed-shape CUDA Graph MoT runner."""
+        self._mot_cuda_graph_runner = None
+        if not enabled:
+            return
+        if self._compile_optimization_requested:
+            raise ValueError("dual_system_self_attn cannot enable CUDA Graph MoT and torch.compile together")
+        if self.video_backbone is None or self.action_backbone is None:
+            raise ValueError("CUDA Graph MoT requires initialized Wan video and action backbones")
+        from openwam.model.architectures.dual_system.mot_cuda_graph import MoTCudaGraphRunner
+
+        driver = self._mot_driver or self.build_mot_driver()
+        self._mot_cuda_graph_runner = MoTCudaGraphRunner(driver)
+
+    def apply_request_context_cache_optimization(self, enabled: bool = True) -> None:
+        """Enable request-local prepared context/KV reuse for supported inference."""
+        if bool(enabled) != self._request_context_cache_enabled and self._mot_cuda_graph_runner is not None:
+            self._mot_cuda_graph_runner.clear("context_cache_mode_changed")
+        self._request_context_cache_enabled = bool(enabled)
+        self._request_context_cache_status["enabled"] = self._request_context_cache_enabled
+        self._request_context_cache_status["last_reason"] = "enabled" if enabled else "disabled"
+
+    def _request_context_cache_unsupported_reason(
+        self,
+        pipeline_inputs: dict,
+        noisy_actions: Optional[Tensor],
+        use_gradient_checkpointing: bool,
+        use_gradient_checkpointing_offload: bool,
+    ) -> Optional[str]:
+        if noisy_actions is None or self.action_backbone is None:
+            return "action_stream_unavailable"
+        if (
+            self.training
+            or getattr(self.video_backbone, "training", False)
+            or getattr(self.action_backbone, "training", False)
+        ):
+            return "training_mode"
+        if torch.is_grad_enabled():
+            return "grad_enabled"
+        if use_gradient_checkpointing or use_gradient_checkpointing_offload:
+            return "checkpoint_or_offload"
+        if getattr(self.action_backbone, "variant", None) != "joint_self_attn":
+            return "non_joint_self_attn_action_variant"
+        if not self.video_backbone.__class__.__module__.startswith("openwam.model.video_backbone.wan"):
+            return "non_wan_video_backbone"
+        if bool(getattr(getattr(self.video_backbone, "dit", None), "has_image_input", False)):
+            return "image_input_unsupported"
+        if float(pipeline_inputs.get("cfg_scale", 1.0)) != 1.0:
+            return "cfg_enabled"
+        for key in (
+            "vace_video",
+            "vace_context",
+            "vace_reference_image",
+            "vace_video_mask",
+            "clip_feature",
+            "y",
+        ):
+            if pipeline_inputs.get(key) is not None:
+                return f"{key}_unsupported"
+        return None
+
+    @torch.no_grad()
+    def generate(self, *args, **kwargs):
+        """Create a fresh request-local context cache for eligible generation."""
+        if self._request_context_cache_enabled:
+            cfg_scale = float(kwargs.get("cfg_scale", 1.0))
+            if cfg_scale == 1.0:
+                request_cache: dict = {}
+                kwargs["_inference_context_cache"] = request_cache
+                self._request_context_cache_status["last_reason"] = "pending"
+            else:
+                self._request_context_cache_status["last_reason"] = "cfg_enabled"
+        return super().generate(*args, **kwargs)
+
+    def _apply(self, fn, recurse=True):
+        runner = getattr(self, "_mot_cuda_graph_runner", None)
+        if runner is not None:
+            runner.clear("module_transform")
+        return super()._apply(fn, recurse=recurse)
+
+    def set_dtype_device(self, dtype, device):
+        runner = getattr(self, "_mot_cuda_graph_runner", None)
+        if runner is not None:
+            runner.clear("dtype_device_changed")
+        super().set_dtype_device(dtype, device)
+
+    def load_checkpoint(self, path: str, strict: bool = True) -> None:
+        runner = getattr(self, "_mot_cuda_graph_runner", None)
+        if runner is not None:
+            runner.clear("checkpoint_reloaded")
+        super().load_checkpoint(path, strict=strict)
+
     def forward(
         self,
         noisy_actions: Optional[Tensor],
@@ -174,6 +281,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
         proprio: Optional[Tensor] = None,
         use_gradient_checkpointing: bool = False,
         use_gradient_checkpointing_offload: bool = False,
+        _inference_context_cache: Optional[dict] = None,
         **pipeline_inputs,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         vb = self.video_backbone
@@ -184,7 +292,39 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
                 "architecture.__init__ to enable forward()."
             )
 
-        pipeline_inputs = self._append_proprio_context_token(dict(pipeline_inputs), proprio)
+        request_cache = _inference_context_cache if self._request_context_cache_enabled else None
+        cache_hit = bool(request_cache and request_cache.get("_prepared"))
+        if request_cache is not None and not cache_hit:
+            unsupported_reason = self._request_context_cache_unsupported_reason(
+                pipeline_inputs,
+                noisy_actions,
+                use_gradient_checkpointing,
+                use_gradient_checkpointing_offload,
+            )
+            if unsupported_reason is not None:
+                request_cache["_unsupported_reason"] = unsupported_reason
+                self._request_context_cache_status["last_reason"] = unsupported_reason
+                request_cache = None
+
+        if cache_hit:
+            pipeline_inputs = dict(pipeline_inputs)
+            pipeline_inputs["context"] = request_cache["raw_context"]
+            pipeline_inputs["context_mask"] = request_cache["raw_context_mask"]
+            if request_cache["raw_seq_lens"] is None:
+                pipeline_inputs.pop("seq_lens", None)
+            else:
+                pipeline_inputs["seq_lens"] = request_cache["raw_seq_lens"]
+            prepared_video_context = request_cache["video_context"]
+            prepared_video_kv = request_cache["video_kv"]
+            prepared_action_context = request_cache["action_context"]
+            prepared_action_kv = request_cache["action_kv"]
+        else:
+            pipeline_inputs = self._append_proprio_context_token(dict(pipeline_inputs), proprio)
+            prepared_video_context = None
+            prepared_video_kv = None
+            prepared_action_context = None
+            prepared_action_kv = None
+
         action_context = pipeline_inputs.get("context")
         action_context_mask = pipeline_inputs.get("context_mask")
         if action_context is not None and action_context_mask is None and pipeline_inputs.get("seq_lens") is not None:
@@ -202,10 +342,14 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
         # pass False.
         pipeline_inputs.setdefault("force_per_token_t_mod", True)
         pipeline_inputs.setdefault("zero_clean_prefix_t_mod", True)
+        video_prepare_inputs = dict(pipeline_inputs)
+        if cache_hit:
+            video_prepare_inputs["prepared_context"] = prepared_video_context
+            video_prepare_inputs["context_kv"] = prepared_video_kv
         vstate = vb.prepare(
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
-            **pipeline_inputs,
+            **video_prepare_inputs,
         )
 
         if noisy_actions is None or ab is None:
@@ -217,14 +361,68 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
         if driver is None:
             driver = self.build_mot_driver()
 
-        astate = ab.prepare_state(
-            noisy_actions,
-            action_timestep,
-            context=action_context,
-            context_mask=action_context_mask,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-            use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
-        )
+        if cache_hit:
+            astate = ab.prepare_state(
+                noisy_actions,
+                action_timestep,
+                prepared_context=prepared_action_context,
+                context_kv=prepared_action_kv,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+            )
+        else:
+            astate = ab.prepare_state(
+                noisy_actions,
+                action_timestep,
+                context=action_context,
+                context_mask=action_context_mask,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+            )
+
+        if request_cache is not None and not cache_hit:
+            unsupported_reason = None
+            if int(getattr(vstate, "prefix_kv_len", 0)) != 0 or getattr(vstate, "prefix_kv_mask", None) is not None:
+                unsupported_reason = "prefix_kv_unsupported"
+            elif getattr(vstate, "vace_hints", None) is not None:
+                unsupported_reason = "vace_hints_unsupported"
+            if unsupported_reason is not None:
+                request_cache["_unsupported_reason"] = unsupported_reason
+                self._request_context_cache_status["last_reason"] = unsupported_reason
+            else:
+                video_kv = tuple(
+                    block.cross_attn.project_context_kv(vstate.context) for block in vstate.extras["dit"].blocks
+                )
+                action_kv = tuple(block.cross_attn.project_context_kv(astate.payload.context) for block in ab.blocks)
+                vstate.extras["context_kv"] = video_kv
+                astate.payload.context_kv = action_kv
+                request_cache.update(
+                    {
+                        "_prepared": True,
+                        "raw_context": pipeline_inputs.get("context"),
+                        "raw_context_mask": pipeline_inputs.get("context_mask"),
+                        "raw_seq_lens": pipeline_inputs.get("seq_lens"),
+                        "video_context": (vstate.context, vstate.context_mask),
+                        "video_kv": video_kv,
+                        "action_context": (astate.payload.context, astate.payload.context_mask),
+                        "action_kv": action_kv,
+                    }
+                )
+                self._request_context_cache_status["requests_prepared"] += 1
+                self._request_context_cache_status["last_reason"] = "prepared"
+        elif cache_hit:
+            self._request_context_cache_status["cache_hits"] += 1
+            self._request_context_cache_status["last_reason"] = "cache_hit"
+        graph_runner = getattr(self, "_mot_cuda_graph_runner", None)
+        if graph_runner is not None:
+            vstate, astate = graph_runner.run(
+                vstate,
+                astate,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+            )
+            return vb.finalize(vstate), ab.extract_prediction(astate)
+
         compiled_loop = getattr(self, "_compiled_mot_run_joint_loop", None)
         if compiled_loop is not None and not use_gradient_checkpointing and not use_gradient_checkpointing_offload:
             try:

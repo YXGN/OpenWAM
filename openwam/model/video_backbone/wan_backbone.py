@@ -352,8 +352,10 @@ class WanBase(VideoBackbone):
         vace = self.vace
         latents = kw["latents"]
         timestep = kw["timestep"]
-        context = kw["context"]
+        prepared_context = kw.get("prepared_context")
+        context = kw.get("context")
         context_mask = kw.get("context_mask")
+        context_kv = kw.get("context_kv")
         seq_lens = kw.get("seq_lens")
         clip_feature = kw.get("clip_feature")
         image_cond_latents = kw.get("y")
@@ -385,7 +387,17 @@ class WanBase(VideoBackbone):
                 # right-aligns and aliases B onto L (mis-broadcasts when B == L).
                 motion_term = motion_term.unsqueeze(1)  # (B, 1, 6, dim)
             time_modulation = time_modulation + motion_term
-        context = dit.text_embedding(context)
+        if prepared_context is None:
+            if context is None:
+                raise ValueError("WanBackbone.prepare requires context when prepared_context is not provided")
+            context = dit.text_embedding(context)
+        else:
+            context, context_mask = prepared_context
+            if context is None or context.ndim != 3:
+                raise ValueError(
+                    "prepared_context embedding must have shape [B, L, dim], "
+                    f"got {None if context is None else tuple(context.shape)}"
+                )
         if context_mask is None:
             if seq_lens is not None:
                 seq_lens = seq_lens.to(device=context.device)
@@ -409,6 +421,8 @@ class WanBase(VideoBackbone):
         if image_cond_latents is not None and dit.require_vae_embedding:
             hidden_states = torch.cat([hidden_states, image_cond_latents], dim=1)
         if clip_feature is not None and dit.require_clip_embedding:
+            if context_kv is not None:
+                raise ValueError("context_kv cannot be used with clip features unless it includes the clip prefix")
             clip_embdding = dit.img_emb(clip_feature)
             context = torch.cat([clip_embdding, context], dim=1)
             if context_mask is not None:
@@ -446,6 +460,7 @@ class WanBase(VideoBackbone):
             "dit": dit,
             "vace": vace,
             "time_embed": time_embed,  # Wan head time embedding; consumed in finalize()
+            "context_kv": context_kv,
         }
         vace_hints = None
         if vace_context is not None:
@@ -579,8 +594,13 @@ class WanBase(VideoBackbone):
         context_mask = None
         if state.context_mask is not None:
             context_mask = state.context_mask.unsqueeze(1).expand(-1, hidden_states.shape[1], -1).unsqueeze(1)
+        context_kv = state.extras.get("context_kv")
+        projected_kv = context_kv[layer_id] if context_kv is not None else None
         hidden_states = hidden_states + block.cross_attn(
-            block.norm3(hidden_states), state.context, ctx_mask=context_mask
+            block.norm3(hidden_states),
+            state.context,
+            ctx_mask=context_mask,
+            projected_kv=projected_kv,
         )
         mlp_input = modulate(block.norm2(hidden_states), shift_mlp, scale_mlp)
         hidden_states = block.gate(hidden_states, gate_mlp, block.ffn(mlp_input))
