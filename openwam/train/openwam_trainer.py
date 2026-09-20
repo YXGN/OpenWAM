@@ -30,6 +30,7 @@ import torch
 from omegaconf import DictConfig
 
 from openwam.train.utils.checkpointing import (
+    archive_weights,
     compute_resume_position,
     finalize_keep_weights_only,
     find_latest_accel_state,
@@ -230,6 +231,14 @@ class OpenWAMTrainer:
                 save_steps = int(save_steps)
         keep_last_k = int(getattr(t, "keep_last_k_ckpts", 3))
         save_full_states_for_resume = bool(getattr(t, "save_full_states_for_resume", False))
+        archive_steps = set(getattr(t, "weight_archive_steps", []) or []) if not debug else set()
+        archive_path = getattr(t, "weight_archive_path", None)
+        if archive_steps and (
+            not archive_path
+            or not save_steps
+            or any(not isinstance(step, int) or step <= 0 or step % save_steps for step in archive_steps)
+        ):
+            raise ValueError("weight_archive_steps must be positive multiples of save_steps, with weight_archive_path set")
 
         # Finetune warm-start weights were already loaded at architecture
         # construction (__init__, self-contained ckpt-dir path). Step stays 0.
@@ -368,7 +377,11 @@ class OpenWAMTrainer:
                     if save_full_states_for_resume:
                         save_full_state(self.accelerator, output_path, global_step, opt_step, epoch)
                     if is_main:
+                        if global_step in archive_steps:
+                            archive_weights(output_path, archive_path, global_step)
                         manage_checkpoints(output_path, keep_last_k)
+                    if global_step in archive_steps:
+                        self.accelerator.wait_for_everyone()
 
                 if max_steps and global_step >= max_steps:
                     pbar.close()

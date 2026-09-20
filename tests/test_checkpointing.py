@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from openwam.train.utils.checkpointing import (
+    archive_weights,
     compute_resume_position,
     finalize_keep_weights_only,
     find_latest_accel_state,
@@ -26,6 +27,71 @@ def _make_accel_state(root: Path, step: int, *, marker: bool) -> Path:
     if marker:
         (d / "trainer_state.json").write_text("{}")
     return d
+
+
+def test_weight_archive_is_loadable_and_survives_rolling_pruning(tmp_path):
+    import numpy as np
+    from safetensors.numpy import load_file, save_file
+
+    run = tmp_path / "runs" / "2026-09-18_12-00-00"
+    run.mkdir(parents=True)
+    weight = run / "checkpoint_step_4000.safetensors"
+    tensor = np.arange(8, dtype=np.float32)
+    save_file({"weight": tensor}, str(weight))
+    original = weight.read_bytes()
+    (run / "config.yaml").write_text("model: {}\n")
+    np.save(run / "normalization_stats.npy", {"mean": tensor})
+    (run / "tokenizer").mkdir()
+    (run / "tokenizer" / "tokenizer.json").write_text("{}")
+    _make_accel_state(run, 4000, marker=True)
+
+    archive = Path(archive_weights(str(run), str(tmp_path / "archives"), 4000))
+    assert {p.name for p in archive.iterdir()} == {
+        weight.name, "config.yaml", "normalization_stats.npy", "tokenizer"
+    }
+    assert (archive / weight.name).read_bytes() == original
+    assert (archive / "config.yaml").read_bytes() == (run / "config.yaml").read_bytes()
+    assert (archive / "normalization_stats.npy").read_bytes() == (run / "normalization_stats.npy").read_bytes()
+    assert (archive / "tokenizer" / "tokenizer.json").read_text() == "{}"
+    (run / "checkpoint_step_6000.safetensors").write_bytes(original)
+    _make_accel_state(run, 6000, marker=True)
+    manage_checkpoints(str(run), keep_last_k=1)
+    assert not weight.exists()
+    assert not (run / "accel_state_step_4000").exists()
+    assert (run / "accel_state_step_6000").exists()
+    np.testing.assert_array_equal(load_file(find_latest_weights(str(archive)))["weight"], tensor)
+
+
+def test_weight_archive_copy_failure_does_not_publish_or_damage_source(tmp_path, monkeypatch):
+    import shutil
+
+    run = tmp_path / "run"
+    run.mkdir()
+    weight = run / "checkpoint_step_4000.safetensors"
+    weight.write_bytes(b"original")
+
+    def interrupted_copy(source, destination):
+        Path(destination).write_bytes(b"partial")
+        raise OSError("simulated full disk")
+
+    monkeypatch.setattr(shutil, "copy2", interrupted_copy)
+    with pytest.raises(OSError, match="simulated full disk"):
+        archive_weights(str(run), str(tmp_path / "archives"), 4000)
+    assert weight.read_bytes() == b"original"
+    assert list((tmp_path / "archives" / "run").iterdir()) == []
+
+
+def test_weight_archive_rejects_overwrite_and_nested_destination(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    existing = tmp_path / "archives" / "run" / "step_4000"
+    existing.mkdir(parents=True)
+    (existing / "sentinel").write_text("preserve")
+    with pytest.raises(FileExistsError):
+        archive_weights(str(run), str(tmp_path / "archives"), 4000)
+    assert (existing / "sentinel").read_text() == "preserve"
+    with pytest.raises(ValueError, match="outside"):
+        archive_weights(str(run), str(run / "archives"), 4000)
 
 
 # --- find_latest_weights ---

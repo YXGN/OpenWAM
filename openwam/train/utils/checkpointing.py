@@ -217,6 +217,44 @@ def save_weights(accelerator, architecture, output_path: str, global_step: int, 
     tqdm.write(msg)
 
 
+def archive_weights(output_path: str, archive_path: str, global_step: int) -> str:
+    """Publish an independent weights-only copy with its deployment assets.
+
+    Called by rank 0 after the ordinary checkpoint has completed. Staging and
+    rename keep an interrupted copy from appearing as a finished archive.
+    Existing archives are never overwritten; optimizer/RNG state is not copied.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from openwam.train.utils.ckpt_model_loader import copy_ckpt_artifacts
+
+    source = Path(output_path).resolve()
+    parent = Path(archive_path).resolve() / source.name
+    if parent.is_relative_to(source):
+        raise ValueError("weight_archive_path must be outside the training run directory")
+    destination = parent / f"step_{global_step}"
+    if destination.exists():
+        raise FileExistsError(f"Refusing to overwrite weight archive: {destination}")
+    weight_name = f"checkpoint_step_{global_step}.safetensors"
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".step_{global_step}_", dir=parent))
+    try:
+        shutil.copy2(source / weight_name, staging / weight_name)
+        shutil.copy2(source / "config.yaml", staging / "config.yaml")
+        stats = source / "normalization_stats.npy"
+        if stats.is_file():
+            shutil.copy2(stats, staging / stats.name)
+        copy_ckpt_artifacts(str(source), str(staging))
+        staging.rename(destination)
+    except BaseException:
+        shutil.rmtree(staging)
+        raise
+    logger.info("[checkpoint] Archived weights and deploy assets: %s", destination)
+    return str(destination)
+
+
 def save_full_state(accelerator, output_path: str, global_step: int, opt_step: int, epoch: int) -> None:
     """Write full Accelerate state to ``accel_state_step_N/`` for resume.
 
