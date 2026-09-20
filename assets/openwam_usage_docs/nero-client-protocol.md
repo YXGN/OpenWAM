@@ -28,6 +28,32 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 10 步同步去噪、CFG=1、无 DiT 近似缓存、不解码预测视频，保留冻结 T5 prompt 缓存。
 这与已审计的开环评估基线一致；没有改模型、采样算法或训练权重。
 
+### 终端日志
+
+服务就绪时打印监听地址、checkpoint 路径与模型内部动作表示。每次成功推理只打印一行，
+相同 prompt 连续使用时以编号引用；首次使用或切换时打印实际传入模型的完整原文。
+例如（数字仅为格式示例，不是本次实测）：
+
+```text
+14:20:01 INFO infer id='8d249930aecd' prompt=P1 infer_ms=800.0 server_ms=825.0 text='Pick up the hammer.'
+14:20:02 INFO infer id='a115567199c2' prompt=P1 infer_ms=780.0 server_ms=803.0
+14:20:04 INFO infer id='e97ff41ef1c9' prompt=P2 infer_ms=850.0 server_ms=877.0 text='Pick up the charger.'
+```
+
+- `id`：客户端 request_id 的前 12 个字符，便于对照请求。
+- `prompt=P…`：此服务进程中的 prompt 版本；A→B→A 会依次成为 P1、P2、P3。
+  `text` 来自模型 conditions 中的 prompt，保留空格和中文；换行显示为 `\n`，避免日志多行展开。
+  这是日志表示，不会修改模型输入；编号也不会改变 T5 缓存键。
+- `infer_ms`：从调用官方引擎到动作已返回 CPU 并校验完成的墙钟耗时，包含实际执行的
+  T5/VAE、去噪和动作后处理；不是单个 GPU kernel 的计时。
+- `server_ms`：进入服务请求处理至响应数据构造完成，包含等待引擎锁、PNG 解码、
+  观测预处理和上述推理；不含 HTTP 请求体接收/JSON 解析、响应 JSON 编码/发送、网络和客户端处理。
+  响应字段 `server_total_sec` 同步采用该范围（秒）；旧版本仅从引擎调用前开始计时。
+
+成功 `/infer` 不再重复打印 HTTP 200 访问日志；握手、重置与失败访问日志保留。
+日志改动不增加 GPU 同步或额外模型调用。已运行的进程需停止客户端策略并重启服务端，
+然后客户端重新握手才会使用新版本；原启动命令无需增加日志参数。
+
 ## 输入和输出
 
 每臂顺序为 `[x,y,z,R00,R10,R20,R01,R11,R21,opening_width]`，左臂在前。

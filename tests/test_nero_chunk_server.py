@@ -3,13 +3,27 @@
 import base64
 import copy
 import io
+import json
+import logging
+import threading
+from contextlib import contextmanager
+from http.client import HTTPConnection
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from omegaconf import OmegaConf
 from PIL import Image
 
-from openwam.deploy.nero_chunk_server import CONTRACT, SERVER_ROLES, WIRE, NeroChunkService, validate_schema
+from openwam.deploy import nero_chunk_server
+from openwam.deploy.nero_chunk_server import (
+    CONTRACT,
+    SERVER_ROLES,
+    WIRE,
+    NeroChunkService,
+    make_http_server,
+    validate_schema,
+)
 from openwam.deploy.nero_contract import conditions_from_observation
 from tests.dataloader.test_nero_multitask import bucket as bucket
 
@@ -141,3 +155,83 @@ def test_prompt_switch_is_verbatim_on_the_same_session(bucket):
         assert response["session_id"] == session
         assert service.engine.conditions["prompt"] == prompt
     assert service.engine.calls == 3
+
+
+def test_prompt_log_references_repeat_and_prints_changes_without_changing_actions(bucket, caplog):
+    service, request, _, outputs = setup_service(bucket)
+    prompts = ["Task A\n保留换行", "Task A\n保留换行", "  Task B\nnew goal  ", "Task A\n保留换行"]
+    with caplog.at_level(logging.INFO):
+        for prompt in prompts:
+            request["prompt"] = prompt
+            response = service.request("/infer", request)
+            assert service.engine.conditions["prompt"] == prompt
+            np.testing.assert_array_equal(response["actions"], outputs)
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 4
+    for message, revision in zip(messages, [1, 1, 2, 3], strict=True):
+        assert f"infer id='one' prompt=P{revision} infer_ms=" in message
+        assert " server_ms=" in message
+        assert "\n" not in message
+    for index in (0, 2, 3):
+        assert messages[index].endswith(f" text={prompts[index]!r}")
+    assert " text=" not in messages[1]
+
+
+def test_server_timing_includes_queue_and_preprocessing(bucket, monkeypatch, caplog):
+    service, request, _, _ = setup_service(bucket)
+    now = [100.0]
+    monkeypatch.setattr(nero_chunk_server, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    @contextmanager
+    def queued_lock():
+        now[0] += 0.04
+        yield
+
+    service._lock = queued_lock()
+    original_preprocess = nero_chunk_server.conditions_from_observation
+    original_generate = service.engine.generate
+
+    def preprocess(*args):
+        now[0] += 0.03
+        return original_preprocess(*args)
+
+    def generate(conditions):
+        now[0] += 0.2
+        return original_generate(conditions)
+
+    monkeypatch.setattr(nero_chunk_server, "conditions_from_observation", preprocess)
+    monkeypatch.setattr(service.engine, "generate", generate)
+    with caplog.at_level(logging.INFO):
+        response = service.request("/infer", request)
+    assert response["server_total_sec"] == pytest.approx(0.27)
+    assert "infer_ms=200.0 server_ms=270.0" in caplog.records[-1].getMessage()
+
+
+def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucket, caplog):
+    service, request, _, outputs = setup_service(bucket)
+    server = make_http_server(service, port=0)
+    worker = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+    worker.start()
+    connection = HTTPConnection(*server.server_address, timeout=10)
+    try:
+        with caplog.at_level(logging.INFO):
+            for prompt, expected_status in [("Task A", 200), ("Task A", 200), ("", 400)]:
+                request["prompt"] = prompt
+                connection.request("POST", "/infer", json.dumps(request), {"Content-Type": "application/json"})
+                response = connection.getresponse()
+                body = json.loads(response.read())
+                assert response.status == expected_status
+                if expected_status == 200:
+                    np.testing.assert_array_equal(body["actions"], outputs)
+                else:
+                    assert body["error"] == "An explicit task prompt is required"
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 3
+    assert sum(message.startswith("infer ") for message in messages) == 2
+    assert any('"POST /infer HTTP/1.1" 400' in message for message in messages)
+    assert not any('"POST /infer HTTP/1.1" 200' in message for message in messages)

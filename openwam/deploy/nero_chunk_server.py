@@ -110,8 +110,11 @@ class NeroChunkService:
         self.identity = identity
         self._lock = threading.Lock()
         self._session = None
+        self._logged_prompt = None
+        self._prompt_revision = 0
 
     def request(self, path, payload):
+        request_started = time.monotonic()
         if not isinstance(payload, dict) or payload.get("wire_format") != WIRE:
             raise ValueError(f"Expected wire_format={WIRE}")
         with self._lock:
@@ -172,7 +175,8 @@ class NeroChunkService:
             if hasattr(actions, "detach"):
                 actions = actions.detach().cpu().numpy()
             actions = finite_eef(actions, (32, 20))
-            return dict(
+            inference_sec = time.monotonic() - started
+            response = dict(
                 ok=True,
                 wire_format=WIRE,
                 session_id=self._session,
@@ -183,8 +187,23 @@ class NeroChunkService:
                 action_horizon=32,
                 dt_sec=1 / 60,
                 anchor_state=state.tolist(),
-                server_total_sec=time.monotonic() - started,
             )
+            response["server_total_sec"] = time.monotonic() - request_started
+            prompt = conditions["prompt"]
+            changed = prompt != self._logged_prompt
+            if changed:
+                self._prompt_revision += 1
+                self._logged_prompt = prompt
+            # Keep multiline prompts on one log line, without altering model input.
+            logging.info(
+                "infer id=%r prompt=P%d infer_ms=%.1f server_ms=%.1f%s",
+                request_id[:12],
+                self._prompt_revision,
+                inference_sec * 1000,
+                response["server_total_sec"] * 1000,
+                f" text={prompt!r}" if changed else "",
+            )
+            return response
 
 
 def make_http_server(service, host="127.0.0.1", port=8849):
@@ -215,6 +234,11 @@ def make_http_server(service, host="127.0.0.1", port=8849):
         def log_message(self, fmt, *args):
             logging.info(fmt, *args)
 
+        def log_request(self, code="-", size="-"):
+            if self.path == "/infer" and code == 200:
+                return  # The inference summary already records successful requests.
+            super().log_request(code, size)
+
     return ThreadingHTTPServer((host, port), Handler)
 
 
@@ -244,9 +268,15 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8849)
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     service = load_service(args.ckpt_dir, args.ckpt_name, args.device)
     server = make_http_server(service, args.host, args.port)
+    logging.info(
+        "ready http://%s:%d checkpoint=%s mode=%s",
+        *server.server_address[:2],
+        args.ckpt_dir / args.ckpt_name,
+        service.identity["model_representation"],
+    )
     try:
         server.serve_forever()
     finally:
