@@ -108,6 +108,23 @@ def file_sha256(path):
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def log_timing(request_id, trace):
+    """One compact breakdown; durations are disjoint synchronized wall times."""
+    stages = trace["stages"]
+    order = ("request", "queue", "images", "obs", "setup", "t5", "vae", "denoise", "action", "other", "response")
+    fields = " ".join(f"{name}={stages[name]:.1f}" for name in order if name in stages)
+    hit = trace.get("t5_cache_hit")
+    cache = "" if hit is None else f" t5_cache={'hit' if hit else 'miss'}"
+    logging.info(
+        "timing_ms id=%r %s total=%.1f%s graph_captures=%d",
+        request_id[:12],
+        fields,
+        trace["total_ms"],
+        cache,
+        trace["graph_captures"],
+    )
+
+
 class NeroChunkService:
     def __init__(self, engine, cfg, identity):
         self.engine = engine
@@ -119,11 +136,13 @@ class NeroChunkService:
         self._logged_prompt = None
         self._prompt_revision = 0
 
-    def request(self, path, payload):
+    def request(self, path, payload, *, timing_trace=None):
         request_started = time.monotonic()
+        profile = bool(getattr(self.engine, "_profile", False))
         if not isinstance(payload, dict) or payload.get("wire_format") != WIRE:
             raise ValueError(f"Expected wire_format={WIRE}")
         with self._lock:
+            acquired = time.monotonic() if profile else None
             if path == "/handshake":
                 validate_schema(payload.get("io_schema"))
                 if payload.get("contract") != CONTRACT:
@@ -162,6 +181,7 @@ class NeroChunkService:
             images = payload.get("images")
             if not isinstance(images, dict) or set(images) != set(SERVER_ROLES):
                 raise ValueError("All three named cameras are required")
+            decode_started = time.monotonic() if profile else None
             decoded = {}
             for role, encoded in images.items():
                 if not isinstance(encoded, str):
@@ -171,8 +191,11 @@ class NeroChunkService:
                     if im.format != "PNG" or im.mode != "RGB":
                         raise ValueError("Expected lossless RGB PNG")
                     decoded[role] = im.copy()
+            decode_finished = time.monotonic() if profile else None
             obs = dict(images=decoded, state=state, prompt=payload["prompt"])
             conditions = conditions_from_observation(self.preprocessor, obs, 42)
+            runner = getattr(getattr(self.engine, "architecture", None), "_mot_cuda_graph_runner", None)
+            captures_before = runner.status(include_signature=False)["capture_count"] if profile and runner else 0
             started = time.monotonic()
             # The official engine owns normalize -> generate -> inverse normalize ->
             # relative pose reconstruction (once, against this request's state).
@@ -212,6 +235,26 @@ class NeroChunkService:
                 backend,
                 f" text={prompt!r}" if changed else "",
             )
+            if profile:
+                stages = {
+                    "queue": (acquired - request_started) * 1000,
+                    "images": (decode_finished - decode_started) * 1000,
+                    "obs": (started - decode_finished) * 1000,
+                    **result.get("timings_ms", {}),
+                }
+                total_ms = response["server_total_sec"] * 1000
+                remainder = max(0.0, total_ms - sum(stages.values()))
+                stages["other"] = stages.get("other", 0.0) + remainder
+                trace = {} if timing_trace is None else timing_trace
+                trace.update(
+                    stages=stages,
+                    total_ms=total_ms,
+                    t5_cache_hit=result.get("t5_cache_hit"),
+                    graph_captures=(runner.status(include_signature=False)["capture_count"] if runner else 0)
+                    - captures_before,
+                )
+                if timing_trace is None:
+                    log_timing(request_id, trace)
             return response
 
 
@@ -221,24 +264,39 @@ def make_http_server(service, host="127.0.0.1", port=8849):
 
         def do_POST(self):
             status = 200
+            trace = {} if self.path == "/infer" and getattr(service.engine, "_profile", False) else None
+            received = time.monotonic() if trace is not None else None
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 32 * 1024 * 1024:
                     self.close_connection = True
                     raise ValueError("Request body must be 1..32 MiB")
                 payload = json.loads(self.rfile.read(length))
-                result = service.request(self.path, payload)
+                if trace is not None:
+                    parsed = time.monotonic()
+                    result = service.request(self.path, payload, timing_trace=trace)
+                else:
+                    result = service.request(self.path, payload)
             except (ValueError, TypeError, KeyError, OSError) as exc:
                 status, result = 400, dict(ok=False, error=str(exc))
             except Exception:
                 logging.exception("Nero inference failed")
                 status, result = 500, dict(ok=False, error="Model inference failed; see server log")
+            response_started = time.monotonic() if trace is not None else None
             body = json.dumps(result, allow_nan=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            if trace is not None and status == 200:
+                finished = time.monotonic()
+                stages = trace["stages"]
+                stages["request"] = (parsed - received) * 1000
+                stages["response"] = (finished - response_started) * 1000
+                trace["total_ms"] = (finished - received) * 1000
+                stages["other"] += max(0.0, trace["total_ms"] - sum(stages.values()))
+                log_timing(payload["request_id"], trace)
 
         def log_message(self, fmt, *args):
             logging.info(fmt, *args)

@@ -20,6 +20,7 @@ import torch
 from openwam.deploy.denoise_schedule import make_schedule, normalize_denoise_config
 from openwam.model.architectures.base import BaseWAMArchitecture
 from openwam.model.compile_options import as_bool, cfg_get, compile_enabled
+from openwam.model.inference_timing import InferenceTiming
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,7 @@ class JointInferenceEngine(BaseInferenceEngine):
         Returns:
             dict with ``video`` (list of PIL images or None) and ``actions`` (numpy array).
         """
+        timing = InferenceTiming(self.architecture.device) if self._profile else None
         inf_cfg = self.cfg.inference
 
         denoise_mode = conditions.get("denoise_mode", getattr(inf_cfg, "denoise_mode", "sync"))
@@ -407,6 +409,7 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "dit_cache": self._dit_cache,
                 "decode_video": self._decode_video,
                 "profile": self._profile,
+                "timing": timing,
                 "vace_cache": self._vace_cache,
                 "prompt_embed_cache": self._prompt_embed_cache,
                 "proprio": proprio,
@@ -414,7 +417,11 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "cfg_merge": self._cfg_merge,
             }
         )
+        if timing is not None:
+            timing.mark("setup")
         result = self.architecture.generate(**generate_kwargs)
+        if timing is not None:
+            timing.mark("other")
 
         if relative_anchor is not None:
             from openwam.dataloader.utils.nero import absolute_actions
@@ -439,5 +446,10 @@ class JointInferenceEngine(BaseInferenceEngine):
         # Attach optimization stats if profiling
         if self._profile and self._dit_cache is not None:
             result["dit_cache_stats"] = self._dit_cache.stats
+
+        if timing is not None:
+            timing.mark("action")
+            result["timings_ms"] = timing.milliseconds
+            result["t5_cache_hit"] = timing.text_cache_hit
 
         return result

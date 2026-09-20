@@ -106,6 +106,32 @@ request_context_cache: true
 减少去噪步数会改变预测，需开环评估；不会改变每块 32 个动作或客户端 60 Hz 约定。
 权重目录中的 `config.yaml` 及通用 `configs/deploy.yaml` 都不是这份调参文件。
 
+### 分阶段耗时诊断
+
+在上述服务端启动命令的环境变量前加 `WAM_PROFILE=1`，例如把
+`CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8` 改为
+`WAM_PROFILE=1 CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8`，其余参数保持原样。
+每次成功推理会在原有 prompt/总耗时日志外，多打印一行 `timing_ms`，单位均为毫秒：
+
+| 字段 | 范围 |
+|---|---|
+| `request` / `response` | 服务端读取请求体与 JSON 解析 / JSON 序列化与写入 socket |
+| `queue` | 等待服务端推理锁，含锁前的轻量校验 |
+| `images` / `obs` | Base64、PNG 解码 / 三相机与 state 观测预处理 |
+| `setup` | 模型输入准备、噪声与调度器初始化等 |
+| `t5` | 文本编码或缓存读取；`t5_cache=hit/miss` 标明本次是否命中 |
+| `vae` | 当前图像准备与 VAE 编码（Nero TI2V 路径） |
+| `denoise` | 全部去噪步，含请求内 context/KV 准备；首次也含图预热与捕获 |
+| `action` | 动作回传 CPU、反归一化及相对 EEF 还原 |
+| `other` | 其余校验、动作列表转换、日志等未单列开销 |
+| `total` | 上述各阶段总和；`graph_captures` 是本请求新增的图捕获次数 |
+
+`total` 从服务端开始读取请求体到响应写入 socket；不包含请求头接收、客户端采图、
+编码、完整网络往返或机器人执行。它比原日志 `server_ms` 多含 HTTP 收发处理。
+阶段采用 GPU 同步后的墙钟时间，可包含资源等待，并非纯 GPU 内核时间。
+详细计时会引入额外同步开销，用于定位问题；比较日常延迟时移除 `WAM_PROFILE=1`
+或设为 `0`。开关在服务启动时读取，不改变去噪步数、缓存策略或动作语义。
+
 ## 3. 客户端先做无硬件握手检查
 
 在机器人机的新终端执行：

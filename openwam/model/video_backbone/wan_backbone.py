@@ -929,6 +929,13 @@ class WanBase(VideoBackbone):
             time_division_remainder=self._time_division_remainder,
         )
 
+        timing = kw.get("timing")
+        if timing is not None:
+            timing.mark("setup")
+            timing.text_cache_hit = bool(
+                (vace_cache and vace_cache.get("populated") and vace_cache.get("prompt_key") == prompt)
+                or (prompt_embed_cache is not None and prompt in prompt_embed_cache)
+            )
         context, seq_lens = wan_encode.encode_text_for_inference(
             prompt,
             vace_cache=vace_cache,
@@ -937,6 +944,8 @@ class WanBase(VideoBackbone):
             text_encoder=self.text_encoder,
             device=self.device,
         )
+        if timing is not None:
+            timing.mark("t5")
 
         _DEFAULT_CAMERA_ORIGIN = (
             0,
@@ -1060,6 +1069,8 @@ class WanBase(VideoBackbone):
             dtype=self.dtype,
             device=self.device,
         )
+        if timing is not None:
+            timing.mark("setup")
         wan_conditioning.finalize_ti2v_first_frame_latents(
             inputs_shared,
             first_frame_image,
@@ -1069,6 +1080,8 @@ class WanBase(VideoBackbone):
             dtype=self.dtype,
             device=self.device,
         )
+        if timing is not None:
+            timing.mark("vae")
         return inputs_shared
 
 

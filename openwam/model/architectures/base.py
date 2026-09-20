@@ -1394,6 +1394,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         dit_cache=None,
         decode_video: bool = True,
         profile: bool = False,
+        timing=None,
         vace_cache: Optional[dict] = None,
         prompt_embed_cache: Optional[dict] = None,
         proprio: Optional[Tensor] = None,
@@ -1474,9 +1475,12 @@ class BaseWAMArchitecture(ABC, nn.Module):
             prompt_embed_cache=prompt_embed_cache,
             cfg_scale=cfg_scale,
             cfg_merge=cfg_merge,
+            **({"timing": timing} if timing is not None else {}),
         )
 
-        if profile:
+        if timing is not None:
+            timing.mark("setup")
+        elif profile:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             logger.info("[WAM_PROFILE] pipeline_prep: %.3fs", time.time() - t0)
@@ -1525,6 +1529,8 @@ class BaseWAMArchitecture(ABC, nn.Module):
         num_train_ts_a = float(self.action_scheduler.num_train_timesteps)
 
         t_loop = time.time()
+        if timing is not None:
+            timing.mark("setup")
 
         for i in tqdm(range(len(schedule) - 1), desc="Joint denoising"):
             t_v, t_a = schedule[i]
@@ -1610,7 +1616,9 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 elif inactive_action_dims is not None:
                     action_latents[..., inactive_action_dims] = inactive_action_noise * float(sigma_a_next)
 
-        if profile:
+        if timing is not None:
+            timing.mark("denoise")
+        elif profile:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             logger.info("[WAM_PROFILE] denoising_loop: %.3fs", time.time() - t_loop)
@@ -1628,6 +1636,9 @@ class BaseWAMArchitecture(ABC, nn.Module):
         normalizer = getattr(self, "normalizer", None)
         if normalizer is not None:
             actions = normalizer.unnormalize(actions)
+
+        if timing is not None:
+            timing.mark("action")
 
         return {"video": video_frames, "actions": actions}
 

@@ -177,8 +177,10 @@ def test_prompt_log_references_repeat_and_prints_changes_without_changing_action
     assert " text=" not in messages[1]
 
 
-def test_server_timing_includes_queue_and_preprocessing(bucket, monkeypatch, caplog):
+@pytest.mark.parametrize("profile", [False, True])
+def test_server_timing_includes_queue_and_preprocessing(bucket, monkeypatch, caplog, profile):
     service, request, _, _ = setup_service(bucket)
+    service.engine._profile = profile
     now = [100.0]
     monkeypatch.setattr(nero_chunk_server, "time", SimpleNamespace(monotonic=lambda: now[0]))
 
@@ -197,14 +199,25 @@ def test_server_timing_includes_queue_and_preprocessing(bucket, monkeypatch, cap
 
     def generate(conditions):
         now[0] += 0.2
-        return original_generate(conditions)
+        result = original_generate(conditions)
+        if profile:
+            result["timings_ms"] = {"setup": 10.0, "vae": 20.0, "denoise": 160.0, "action": 10.0}
+            result["t5_cache_hit"] = True
+        return result
 
     monkeypatch.setattr(nero_chunk_server, "conditions_from_observation", preprocess)
     monkeypatch.setattr(service.engine, "generate", generate)
     with caplog.at_level(logging.INFO):
         response = service.request("/infer", request)
     assert response["server_total_sec"] == pytest.approx(0.27)
-    assert "infer_ms=200.0 server_ms=270.0" in caplog.records[-1].getMessage()
+    assert "infer_ms=200.0 server_ms=270.0" in caplog.records[0].getMessage()
+    assert "timings_ms" not in response
+    if profile:
+        message = caplog.records[1].getMessage()
+        for value in ("queue=40.0", "obs=30.0", "denoise=160.0", "total=270.0", "t5_cache=hit"):
+            assert value in message
+    else:
+        assert len(caplog.records) == 1
 
 
 def test_inference_log_reports_actual_graph_backend(bucket, caplog):
@@ -222,8 +235,10 @@ def test_inference_log_reports_actual_graph_backend(bucket, caplog):
     assert "backend=cuda_graph" in caplog.records[-1].getMessage()
 
 
-def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucket, caplog):
+@pytest.mark.parametrize("profile", [False, True])
+def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucket, caplog, profile):
     service, request, _, outputs = setup_service(bucket)
+    service.engine._profile = profile
     server = make_http_server(service, port=0)
     worker = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
     worker.start()
@@ -238,6 +253,7 @@ def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucke
                 assert response.status == expected_status
                 if expected_status == 200:
                     np.testing.assert_array_equal(body["actions"], outputs)
+                    assert "timings_ms" not in body
                 else:
                     assert body["error"] == "An explicit task prompt is required"
     finally:
@@ -246,7 +262,11 @@ def test_http_logs_one_summary_per_inference_and_retains_error_access_logs(bucke
         server.server_close()
         worker.join(timeout=5)
     messages = [record.getMessage() for record in caplog.records]
-    assert len(messages) == 3
+    assert len(messages) == (5 if profile else 3)
     assert sum(message.startswith("infer ") for message in messages) == 2
+    details = [message for message in messages if message.startswith("timing_ms ")]
+    assert len(details) == (2 if profile else 0)
+    for message in details:
+        assert "request=" in message and "response=" in message and "queue=" in message
     assert any('"POST /infer HTTP/1.1" 400' in message for message in messages)
     assert not any('"POST /infer HTTP/1.1" 200' in message for message in messages)
