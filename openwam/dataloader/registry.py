@@ -82,6 +82,7 @@ def _register_builtins():
     from openwam.dataloader.moon_cake import MoonCakeDataset
     from openwam.dataloader.muka_franka import MukaFrankaDataset
     from openwam.dataloader.nero_multitask import NeroMultitaskDataset
+    from openwam.dataloader.nero_multitask_absolute import NeroMultitaskAbsoluteDataset
     from openwam.dataloader.oxe_droid import OxeDroidDataset
     from openwam.dataloader.robocasa365 import MultiTaskRoboCasa365Dataset
     from openwam.dataloader.robocasa_gr1 import MultiRoboCasaGR1Dataset
@@ -108,6 +109,7 @@ def _register_builtins():
     register_dataset("vlabench")(VLABenchDataset)
     register_dataset("moon_cake")(MoonCakeDataset)
     register_dataset("nero_multitask")(NeroMultitaskDataset)
+    register_dataset("nero_multitask_absolute")(NeroMultitaskAbsoluteDataset)
 
 
 _register_builtins()

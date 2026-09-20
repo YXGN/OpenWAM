@@ -1,0 +1,7 @@
+defaults:
+  - nero_multitask
+  - _self_
+
+type: nero_multitask_absolute
+action_mode: eef
+normalization_stats_path: outputs/nero_absolute_data/normalization_stats.npy
