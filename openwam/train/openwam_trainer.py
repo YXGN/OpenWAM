@@ -151,6 +151,18 @@ class OpenWAMTrainer:
         for name in self.architecture.freeze_modules(freeze_list):
             logger.info("Frozen: %s", name)
 
+        if bool(t.get("cache_frozen_text_embeddings", False)):
+            from openwam.model.video_backbone.wan.encode import FrozenTextCache
+            from openwam.model.video_backbone.wan_backbone import WanBase
+
+            backbone = self.architecture.video_backbone
+            if not isinstance(backbone, WanBase):
+                raise ValueError("cache_frozen_text_embeddings currently requires the Wan backbone")
+            backbone._training_text_cache = FrozenTextCache(
+                tokenizer=backbone._tokenizer, text_encoder=backbone.text_encoder
+            )
+            logger.info("Frozen T5 output cache enabled (run-local, populated on first use)")
+
         # Initialize all schedulers (video + action) inside architecture
         self.architecture.init_training_schedulers(1000)
 

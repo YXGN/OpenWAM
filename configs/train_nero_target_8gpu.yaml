@@ -1,0 +1,29 @@
+# Target A100 server: fresh finetune, 8 x 64, accumulation 1.
+defaults:
+  - train_nero_8gpu
+  - _self_
+
+training:
+  finetune_ckpt_path: /data2/public/OpenWAM-Alpha-Pretrain-Foundation-Model/checkpoint_step_154000.safetensors
+  resume_ckpt_path: null
+  output_path: /data3/xieweize/openwam_runs/nero_multitask_8gpu_b64
+  batch_size: 64
+  gradient_accumulation_steps: 1
+  num_epochs: 5
+  max_steps: null
+  zero2_cached_grad_nodes: true
+  cache_frozen_text_embeddings: true
+  save_steps: 2000
+  save_full_states_for_resume: true
+  # During training, write the next full checkpoint before pruning the old one.
+  # Existing normal-completion behavior keeps final weights and removes resume states.
+  keep_last_k_ckpts: 1
+  weight_archive_steps: [4000]
+  weight_archive_path: /data2/xieweize/project/OpenWAM/outputs/nero_multitask_weights
+
+dataloader:
+  normalization_stats_path: /data2/xieweize/project/OpenWAM/outputs/nero_multitask_data/normalization_stats.npy
+
+project:
+  wandb:
+    run_name: nero-multitask-8gpu-b64

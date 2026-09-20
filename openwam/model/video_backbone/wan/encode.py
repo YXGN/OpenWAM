@@ -34,6 +34,52 @@ def encode_text(prompts: list, *, tokenizer, text_encoder, device) -> Tuple[Tens
     return context, seq_lens
 
 
+class FrozenTextCache:
+    """Run-local text embeddings for an immutable, eval-mode encoder.
+
+    A cache miss encodes the original full batch, preserving its padding and
+    batch shape. Returned tensors own their storage so downstream conditioning
+    cannot mutate cached entries. This plain Python object is not checkpointed;
+    construct it only after loading and freezing the encoder.
+    """
+
+    def __init__(self, *, tokenizer, text_encoder):
+        self.tokenizer = tokenizer
+        self.text_encoder = text_encoder
+        self.entries = {}
+        self._execution_key = None
+
+    @torch.no_grad()
+    def encode(self, prompts: list[str], *, device) -> Tuple[Tensor, Tensor]:
+        if any(m.training for m in self.text_encoder.modules()) or any(
+            p.requires_grad for p in self.text_encoder.parameters()
+        ):
+            raise ValueError("FrozenTextCache requires a frozen encoder with all submodules in eval mode")
+        device = torch.device(device)
+        parameter = next(self.text_encoder.parameters())
+        execution_key = (
+            device, parameter.dtype, torch.is_autocast_enabled(device.type),
+            torch.get_autocast_dtype(device.type),
+        )
+        if execution_key != self._execution_key:
+            self.entries.clear()
+            self._execution_key = execution_key
+        missing = set(prompts).difference(self.entries)
+        if missing:
+            context, seq_lens = encode_text(
+                prompts, tokenizer=self.tokenizer, text_encoder=self.text_encoder, device=device
+            )
+            for i, prompt in enumerate(prompts):
+                if prompt in missing:
+                    self.entries[prompt] = (context[i].detach().clone(), seq_lens[i].detach().clone())
+                    missing.remove(prompt)
+            return context, seq_lens
+        return (
+            torch.stack([self.entries[prompt][0] for prompt in prompts]),
+            torch.stack([self.entries[prompt][1] for prompt in prompts]),
+        )
+
+
 def encode_text_for_inference(
     prompt, *, vace_cache, prompt_embed_cache, tokenizer, text_encoder, device
 ) -> Tuple[Tensor, Tensor]:
