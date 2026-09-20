@@ -55,8 +55,25 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 .venv/bin/python -m openwam.deploy.nero_chunk_server \
   --ckpt-dir models/nero_relative_8gpu_b64_20260919/step_8025 \
   --ckpt-name checkpoint_step_8025.safetensors \
-  --device cuda:0 --host 0.0.0.0 --port 8849
+  --device cuda:0 --host 0.0.0.0 --port 8017
 ```
+
+使用相对 EEF 的 **step4000 中间权重**时，改用下面的完整命令：
+
+```bash
+cd /path/to/OpenWAM
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+.venv/bin/python -m openwam.deploy.nero_chunk_server \
+  --ckpt-dir models/nero_relative_8gpu_b64_20260919/step_4000 \
+  --ckpt-name checkpoint_step_4000.safetensors \
+  --device cuda:0 --host 0.0.0.0 --port 8017
+```
+
+step4000 与 step8025 命令二选一，使用同一 GPU 和端口；切换前先停止客户端策略，
+再停止旧服务。新服务加载完成后客户端重新握手，后端地址仍为 `http://MODEL_HOST:8017`。
+这里的step4000是已迁移的**相对EEF**权重，不是本机绝对EEF训练的同名保存点。
+示例显式使用8017端口；省略 `--port` 时程序默认仍为8849。
 
 `CUDA_VISIBLE_DEVICES` 选择物理 GPU，`--device cuda:0` 指该进程内的第一张可见卡。
 同机使用可将 `--host` 改为 `127.0.0.1`；跨机客户端填写模型机可达地址，不能填
@@ -72,7 +89,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 
 ```bash
 cd /path/to/velabot_agentic_os
-export NERO_BACKEND=http://MODEL_HOST:8849
+export NERO_BACKEND=http://MODEL_HOST:8017
 export NERO_PROFILE=profiles/robots/agilex-nero-dual-arm.yaml
 
 uv run --no-sync vela-run plan \
