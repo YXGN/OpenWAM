@@ -1,5 +1,7 @@
 # Nero 客户端协议：openwam_nero/v1
 
+首次部署请先阅读[客户端与服务端 Quickstart](nero-client-server-quickstart.md)。
+
 本入口用于 Nero 的 `nero_multitask/eef_relative` 与
 `nero_multitask_absolute/eef` checkpoint。相对与绝对是模型内部表示；两者
 对外都使用 **body 坐标系、gripper_flange 末端的绝对 EEF20**。
