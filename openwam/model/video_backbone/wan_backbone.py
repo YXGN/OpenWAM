@@ -757,6 +757,13 @@ class WanBase(VideoBackbone):
         """Unified train preprocessing: raw data (``frames``/``text``, optional
         ``vace_videos``/``ref_images`` in kw) → the denoising-loop input dict.
         """
+        if kw.get("preencoded_video") is not None:
+            from openwam.dataloader.utils.nero_video_cache import prepare_cached_ti2v
+
+            return prepare_cached_ti2v(
+                self, kw["preencoded_video"], kw.get("preencoded_video_geometry", ()), text
+            )
+
         device = self.device
         dtype = self.dtype
 

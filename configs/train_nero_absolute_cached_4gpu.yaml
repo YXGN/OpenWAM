@@ -1,0 +1,11 @@
+# Same B64/GAS1 absolute-EEF recipe; only the frozen video-input computation changes.
+defaults:
+  - train_nero_absolute_4gpu
+  - _self_
+
+dataloader:
+  video_latent_cache_dir: ${oc.env:OPENWAM_NERO_VAE_CACHE,outputs/nero_video_cache}
+
+project:
+  wandb:
+    run_name: nero-absolute-eef-4gpu-b64-vae-cache

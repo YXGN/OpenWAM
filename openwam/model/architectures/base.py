@@ -963,11 +963,25 @@ class BaseWAMArchitecture(ABC, nn.Module):
         if any(ref_flags) and not all(ref_flags):
             raise ValueError("Mixed reference images in batch: all samples must be consistent.")
 
+        cache_kwargs = {}
+        cached_flags = ["video_latents" in sample for sample in samples]
+        if any(cached_flags):
+            if not all(cached_flags):
+                raise ValueError("Cannot mix raw video and cached video in one batch")
+            geometry = tuple(samples[0]["video_geometry"])
+            if any(tuple(s["video_geometry"]) != geometry for s in samples):
+                raise ValueError("Cached video geometry must be consistent")
+            cache_kwargs = {
+                "preencoded_video": torch.stack([s["video_latents"] for s in samples]),
+                "preencoded_video_geometry": geometry,
+            }
+
         preprocessed = self.preprocess(
             frames=all_frames,
             text=all_prompts,
             vace_videos=all_vace_videos,
             ref_images=all_ref_images if ref_flags[0] else None,
+            **cache_kwargs,
         )
 
         action_data = torch.cat(all_actions, dim=0) if all_actions[0] is not None else None

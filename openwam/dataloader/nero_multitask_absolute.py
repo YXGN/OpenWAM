@@ -14,6 +14,7 @@ class NeroMultitaskAbsoluteDataset(NeroMultitaskDataset):
     """Reuse Nero indexing/cameras/proprio, replacing only action semantics/stats."""
 
     DATASET_NAME = "NeroMultitaskAbsolute"
+    CONFIG_KEYS = NeroMultitaskDataset.CONFIG_KEYS + ("video_latent_cache_dir",)
 
     def __init__(
         self,
@@ -22,6 +23,7 @@ class NeroMultitaskAbsoluteDataset(NeroMultitaskDataset):
         normalization_stats_path,
         action_mode=ACTION_MODE,
         require_all_cameras=True,
+        video_latent_cache_dir=None,
         **kwargs,
     ):
         if action_mode != ACTION_MODE:
@@ -39,6 +41,26 @@ class NeroMultitaskAbsoluteDataset(NeroMultitaskDataset):
         # constructor deliberately rejects absolute mode. Its pure indexing,
         # camera, EEF assembly and proprio methods are shared unchanged.
         LeRobotV3Reader.__init__(self, dataset_dir, **kwargs)
+        self.video_latent_cache = None
+        if video_latent_cache_dir:
+            from openwam.dataloader.utils.nero_video_cache import NeroVideoCache
+
+            self.video_latent_cache = NeroVideoCache(video_latent_cache_dir, self)
+
+    def _decode_window_video(self, *args, **kwargs):
+        if self.video_latent_cache is not None:
+            return []
+        return super()._decode_window_video(*args, **kwargs)
+
+    def __getitem__(self, idx):
+        sample = super().__getitem__(idx)
+        if self.video_latent_cache is not None:
+            from openwam.dataloader.utils.nero_video_cache import GEOMETRY
+
+            sample["video_latents"] = self.video_latent_cache[idx]
+            sample["video_geometry"] = GEOMETRY
+            sample["first_frame_image"] = None
+        return sample
 
     def _load_stats(self, info):
         payload, action_stats, self._state_stats = load_absolute_stats(self._stats_path)

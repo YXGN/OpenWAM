@@ -163,6 +163,11 @@ class OpenWAMTrainer:
             )
             logger.info("Frozen T5 output cache enabled (run-local, populated on first use)")
 
+        video_cache = getattr(dataset, "video_latent_cache", None)
+        if video_cache is not None:
+            video_cache.validate_backbone(self.architecture.video_backbone)
+            logger.info("Validated complete frozen VAE cache: %s", video_cache.root)
+
         # Initialize all schedulers (video + action) inside architecture
         self.architecture.init_training_schedulers(1000)
 
