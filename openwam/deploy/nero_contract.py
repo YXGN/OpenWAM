@@ -1,10 +1,14 @@
 """Shared Nero checkpoint contract and official-engine observation conditions."""
 
+from pathlib import Path
+
 from omegaconf import OmegaConf
 
 from openwam.dataloader.utils.nero import CAMERAS, CONTRACT, UNIFY_MAP
 from openwam.dataloader.utils.nero_absolute import CONTRACT as ABSOLUTE_CONTRACT
 from openwam.dataloader.utils.unify_action import parse_unify_spec
+
+DEFAULT_INFERENCE_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "deploy_nero.yaml"
 
 
 def validate_contract(cfg, stats):
@@ -60,16 +64,32 @@ def conditions_from_observation(preprocessor, observation, seed):
     }
 
 
-def inference_config(steps, *, fast_path=True):
-    if steps < 1:
-        raise ValueError("denoise_steps must be positive")
+def inference_config(steps=None, *, fast_path=None, config_path=DEFAULT_INFERENCE_CONFIG):
+    """Read only the four Nero tuning knobs; keep model/robot semantics fixed."""
+    values = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+    fields = {"denoise_steps", "inference_fast_path", "cuda_graph", "request_context_cache"}
+    if not isinstance(values, dict) or set(values) != fields:
+        raise ValueError(f"Nero inference YAML must contain exactly: {', '.join(sorted(fields))}")
+    if type(values["denoise_steps"]) is not int or values["denoise_steps"] < 1:
+        raise ValueError("denoise_steps must be a positive integer")
+    for name in fields - {"denoise_steps"}:
+        if type(values[name]) is not bool:
+            raise ValueError(f"{name} must be a YAML boolean (true/false)")
+    if steps is not None:
+        if type(steps) is not int or steps < 1:
+            raise ValueError("denoise_steps must be a positive integer")
+        values["denoise_steps"] = steps
+    if fast_path is not None:
+        if type(fast_path) is not bool:
+            raise ValueError("fast_path must be a boolean")
+        values["inference_fast_path"] = fast_path
     return OmegaConf.create(
         {
-            "inference": {"denoise_steps": steps, "denoise_mode": "sync", "cfg_scale": 1.0},
+            "inference": {"denoise_steps": values["denoise_steps"], "denoise_mode": "sync", "cfg_scale": 1.0},
             "optimization": {
-                "inference_fast_path": {"enabled": fast_path},
-                "cuda_graph": {"enabled": True},
-                "request_context_cache": {"enabled": True},
+                "inference_fast_path": {"enabled": values["inference_fast_path"]},
+                "cuda_graph": {"enabled": values["cuda_graph"]},
+                "request_context_cache": {"enabled": values["request_context_cache"]},
                 "decode_video": False,
                 "compile": {"enabled": False},
                 "dit_cache": {"enabled": False},

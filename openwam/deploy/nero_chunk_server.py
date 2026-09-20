@@ -22,7 +22,12 @@ import numpy as np
 from omegaconf import OmegaConf
 from PIL import Image
 
-from openwam.deploy.nero_contract import conditions_from_observation, inference_config, validate_contract
+from openwam.deploy.nero_contract import (
+    DEFAULT_INFERENCE_CONFIG,
+    conditions_from_observation,
+    inference_config,
+    validate_contract,
+)
 from openwam.deploy.obs_preprocess import ObsPreprocessor
 
 WIRE = "openwam_nero/v1"
@@ -106,6 +111,7 @@ def file_sha256(path):
 class NeroChunkService:
     def __init__(self, engine, cfg, identity):
         self.engine = engine
+        self.cfg = cfg
         self.preprocessor = ObsPreprocessor.from_cfg(cfg, engine)
         self.identity = identity
         self._lock = threading.Lock()
@@ -245,9 +251,12 @@ def make_http_server(service, host="127.0.0.1", port=8849):
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def load_service(ckpt_dir, ckpt_name, device="cuda:0", *, fast_path=True):
+def load_service(
+    ckpt_dir, ckpt_name, device="cuda:0", *, fast_path=None, denoise_steps=None, config_path=DEFAULT_INFERENCE_CONFIG
+):
     from openwam.deploy.server import build_server_from_config
 
+    deploy = inference_config(denoise_steps, fast_path=fast_path, config_path=config_path)
     root = Path(ckpt_dir).resolve()
     if Path(ckpt_name).name != ckpt_name or not ckpt_name.endswith(".safetensors"):
         raise ValueError("Expected a checkpoint filename")
@@ -257,9 +266,9 @@ def load_service(ckpt_dir, ckpt_name, device="cuda:0", *, fast_path=True):
     identity = {"checkpoint": ckpt_name, "model_representation": training.dataloader.action_mode}
     for key, name in (("checkpoint", ckpt_name), ("config", "config.yaml"), ("stats", "normalization_stats.npy")):
         identity[key + "_sha256"] = file_sha256(root / name)
-    # Keep the audited 10-step synchronous engine baseline. No RTC, approximate
+    # Keep synchronous joint inference. No RTC, approximate
     # DiT cache, future video conditioning, or extra classifier-free guidance.
-    server = build_server_from_config(inference_config(10, fast_path=fast_path), str(root), device, ckpt_name)
+    server = build_server_from_config(deploy, str(root), device, ckpt_name)
     return NeroChunkService(server.engine, server.cfg, identity)
 
 
@@ -270,17 +279,27 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8849)
+    parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG, help="Nero inference YAML")
+    parser.add_argument("--denoise-steps", type=int, help="Override YAML denoise_steps")
     parser.add_argument("--disable-inference-fast-path", action="store_true", help="Use eager inference for comparison")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
-    service = load_service(args.ckpt_dir, args.ckpt_name, args.device, fast_path=not args.disable_inference_fast_path)
+    service = load_service(
+        args.ckpt_dir,
+        args.ckpt_name,
+        args.device,
+        fast_path=False if args.disable_inference_fast_path else None,
+        denoise_steps=args.denoise_steps,
+        config_path=args.config,
+    )
     server = make_http_server(service, args.host, args.port)
     logging.info(
-        "ready http://%s:%d checkpoint=%s mode=%s fast_path=%s",
+        "ready http://%s:%d checkpoint=%s mode=%s denoise_steps=%d fast_path=%s",
         *server.server_address[:2],
         args.ckpt_dir / args.ckpt_name,
         service.identity["model_representation"],
-        not args.disable_inference_fast_path,
+        service.cfg.inference.denoise_steps,
+        service.cfg.optimization.inference_fast_path.enabled,
     )
     try:
         server.serve_forever()

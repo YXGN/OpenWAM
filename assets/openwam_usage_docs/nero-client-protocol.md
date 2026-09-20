@@ -25,11 +25,13 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 加载使用官方 `build_server_from_config`；预处理使用官方 `ObsPreprocessor`；
 每次请求直接调用一次 `JointInferenceEngine.generate`。服务端没有逐步动作队列。
-10 步同步去噪、CFG=1、无 DiT 近似缓存、不解码预测视频，保留冻结 T5 prompt 缓存。
+默认 10 步同步去噪、CFG=1、无 DiT 近似缓存、不解码预测视频，保留冻结 T5 prompt 缓存。
 这与已审计的开环评估基线一致；没有改模型、采样算法或训练权重。
 现已显式开启静态动作索引、请求内 context/KV 复用和联合 Transformer CUDA Graph。
 优化范围与等价验证见[推理性能说明](nero-inference-performance.md)。追加
 `--disable-inference-fast-path` 可对照原 eager 路径；首次推理需要图预热和捕获。
+必要调参集中在 `configs/deploy_nero.yaml`，支持 `--config` 指定副本及 `--denoise-steps`
+优先覆盖步数；服务和开环评估共用。改步数会改变预测，历史 10 步等价与性能结论不代表新步数。
 
 ### 终端日志
 

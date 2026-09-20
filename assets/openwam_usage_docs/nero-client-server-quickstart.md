@@ -89,6 +89,23 @@ CUDA Graph。首次推理含预热/捕获；之后日志的 `backend=cuda_graph`
 `--disable-inference-fast-path`。客户端参数不变；停止策略、重启服务、重新握手后生效。
 逐项输出等价性与耗时证据见 OpenWAM 的 `nero-inference-performance.md`。
 
+Nero 服务和开环评估默认读取 OpenWAM 的 `configs/deploy_nero.yaml`，不同权重可共用：
+
+```yaml
+denoise_steps: 10
+inference_fast_path: true
+cuda_graph: true
+request_context_cache: true
+```
+
+日常只需修改 `denoise_steps`。优化总开关关闭时，两个子开关不生效。
+也可复制该文件，在服务端命令追加 `--config /path/to/deploy_nero.yaml`；
+临时试 8 步时追加 `--denoise-steps 8`，优先于 YAML。原来的
+`--disable-inference-fast-path` 同样优先于 YAML。配置只在启动时读取，修改后需停止策略、
+重启服务并重新握手；启动日志的 `denoise_steps` 是实际值。
+减少去噪步数会改变预测，需开环评估；不会改变每块 32 个动作或客户端 60 Hz 约定。
+权重目录中的 `config.yaml` 及通用 `configs/deploy.yaml` 都不是这份调参文件。
+
 ## 3. 客户端先做无硬件握手检查
 
 在机器人机的新终端执行：

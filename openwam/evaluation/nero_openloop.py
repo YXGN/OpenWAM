@@ -31,7 +31,12 @@ from openwam.dataloader.utils.nero import (
 )
 from openwam.dataloader.utils.normalization import apply_normalization
 from openwam.dataloader.utils.video_io import decode_video_frames
-from openwam.deploy.nero_contract import conditions_from_observation, inference_config, validate_contract
+from openwam.deploy.nero_contract import (
+    DEFAULT_INFERENCE_CONFIG,
+    conditions_from_observation,
+    inference_config,
+    validate_contract,
+)
 from openwam.deploy.obs_preprocess import ObsPreprocessor
 
 
@@ -117,6 +122,7 @@ def run(args):
     from openwam.evaluation.nero_metrics import DIM_NAMES, evaluate
     from openwam.evaluation.nero_report import write_report
 
+    deploy_cfg = inference_config(args.denoise_steps, config_path=args.config)
     root, ckpt_dir, output = args.dataset.resolve(), args.ckpt_dir.resolve(), args.output.resolve()
     if len(set(args.episodes)) != len(args.episodes) or args.seed < 0:
         raise ValueError("Episodes must be unique and seed must be nonnegative")
@@ -172,7 +178,7 @@ def run(args):
         plan = plan[: args.max_windows]
     if not plan:
         raise ValueError("No evaluation windows selected")
-    cfg = merge_deploy_cfg(training_cfg, inference_config(args.denoise_steps))
+    cfg = merge_deploy_cfg(training_cfg, deploy_cfg)
     preprocessor = ObsPreprocessor.from_cfg(cfg)
     output.mkdir(parents=True)
     (output / "observations").mkdir()
@@ -190,10 +196,10 @@ def run(args):
         "seed": args.seed,
         "fps": info["fps"],
         "stride": args.stride,
-        "denoise_steps": args.denoise_steps,
+        "denoise_steps": deploy_cfg.inference.denoise_steps,
         "dimensions": DIM_NAMES,
         "metric_weighting": "window-horizon pairs (overlaps counted); episode/task summaries separate",
-        "inference": OmegaConf.to_container(inference_config(args.denoise_steps)),
+        "inference": OmegaConf.to_container(deploy_cfg),
         "windows": [],
     }
     repo = Path(__file__).resolve().parents[2]
@@ -217,7 +223,7 @@ def run(args):
         from openwam.deploy.engine import JointInferenceEngine
 
         loaded_cfg, architecture = load_from_checkpoint_dir(str(ckpt_dir), device=args.device, ckpt_name=args.ckpt_name)
-        engine = JointInferenceEngine(merge_deploy_cfg(loaded_cfg, inference_config(args.denoise_steps)), architecture)
+        engine = JointInferenceEngine(merge_deploy_cfg(loaded_cfg, deploy_cfg), architecture)
         import torch
 
         manifest["runtime"] = {
@@ -321,7 +327,8 @@ def main():
     p.add_argument("--stride", type=int, default=32)
     p.add_argument("--max-windows", type=int)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--denoise-steps", type=int, default=10)
+    p.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG, help="Nero inference YAML")
+    p.add_argument("--denoise-steps", type=int, help="Override YAML denoise_steps")
     p.add_argument("--device", default="cuda:0")
     p.add_argument(
         "--verify-parity",

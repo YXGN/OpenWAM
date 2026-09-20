@@ -1,0 +1,9 @@
+# Shared by the Nero HTTP server and open-loop evaluation.
+# Fewer denoising steps change predictions; evaluate before robot deployment.
+denoise_steps: 10
+
+# Master switch; false disables all three inference optimizations.
+inference_fast_path: true
+# Independent switches for performance comparisons when the master is enabled.
+cuda_graph: true
+request_context_cache: true
