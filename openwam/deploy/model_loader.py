@@ -255,6 +255,12 @@ def repr_contract_from_cfg(cfg: DictConfig) -> dict:
             "output_frame": "absolute_body_gripper_flange",
             "gripper_convention": "opening_width_metres_0_to_0.1",
         })
+    if OmegaConf.select(cfg, "dataloader.type") == "nero_multitask_absolute":
+        contract.update({
+            "model_representation": "eef",
+            "output_frame": "absolute_body_gripper_flange",
+            "gripper_convention": "opening_width_metres_0_to_0.1",
+        })
     if dims:
         contract["binary_action_dims"] = [int(d) for d in dims]
     if gripper_convention is not None:
@@ -280,6 +286,19 @@ def _build_inner_normalizer(cfg: DictConfig, ckpt_dir: str):
     dl = OmegaConf.select(cfg, "dataloader", default=None)
     norm_mode = OmegaConf.select(cfg, "dataloader.normalize_mode", default=None)
     action_mode = OmegaConf.select(cfg, "dataloader.action_mode", default="joint")
+    nero_absolute = OmegaConf.select(cfg, "dataloader.type") == "nero_multitask_absolute"
+    if nero_absolute:
+        from openwam.dataloader.utils.nero import UNIFY_MAP
+        from openwam.dataloader.utils.unify_action import parse_unify_spec
+
+        action_map = OmegaConf.select(cfg, "dataloader.unify_action_map")
+        state_map = OmegaConf.select(cfg, "dataloader.unify_state_map")
+        if action_mode != "eef" or norm_mode != "min-max" or not OmegaConf.select(cfg, "dataloader.unify_action"):
+            raise ValueError("Nero absolute deployment requires eef, min-max normalization and unified actions")
+        if action_map is None or parse_unify_spec(action_map).tolist() != UNIFY_MAP:
+            raise ValueError("Nero absolute deployment requires the canonical EEF slot map")
+        if state_map is not None and parse_unify_spec(state_map).tolist() != UNIFY_MAP:
+            raise ValueError("Nero absolute deployment requires the canonical proprio slot map")
     if action_mode == "eef_relative":
         from openwam.dataloader.utils.nero import UNIFY_MAP
         from openwam.dataloader.utils.unify_action import parse_unify_spec
@@ -336,6 +355,10 @@ def _build_inner_normalizer(cfg: DictConfig, ckpt_dir: str):
             "config, or add the mode to YAML_TO_NORM_MODE."
         )
 
+    if nero_absolute:
+        from openwam.dataloader.utils.nero_absolute import load_absolute_stats
+
+        load_absolute_stats(stats_path)
     mode_stats = load_mode_stats(stats_path, action_mode)
     if action_mode == "eef_relative":
         from openwam.dataloader.utils.nero import CONTRACT
