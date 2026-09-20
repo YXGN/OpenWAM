@@ -92,7 +92,7 @@ CUDA Graph。首次推理含预热/捕获；之后日志的 `backend=cuda_graph`
 Nero 服务和开环评估默认读取 OpenWAM 的 `configs/deploy_nero.yaml`，不同权重可共用：
 
 ```yaml
-denoise_steps: 10
+denoise_steps: 4
 inference_fast_path: true
 cuda_graph: true
 request_context_cache: true

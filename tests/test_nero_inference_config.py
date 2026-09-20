@@ -21,10 +21,10 @@ def write_config(path, **changes):
     return path
 
 
-def test_default_yaml_preserves_previous_effective_config(monkeypatch, tmp_path):
+def test_default_yaml_loads_shared_nero_recipe_independent_of_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     assert OmegaConf.to_container(inference_config()) == {
-        "inference": {"denoise_steps": 10, "denoise_mode": "sync", "cfg_scale": 1.0},
+        "inference": {"denoise_steps": 4, "denoise_mode": "sync", "cfg_scale": 1.0},
         "optimization": {
             "inference_fast_path": {"enabled": True},
             "cuda_graph": {"enabled": True},
