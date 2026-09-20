@@ -130,3 +130,14 @@ def test_schema_must_not_just_echo_client_claims():
         bad["groups"][0][key] = value
         with pytest.raises(ValueError):
             validate_schema(bad)
+
+
+def test_prompt_switch_is_verbatim_on_the_same_session(bucket):
+    service, request, _, _ = setup_service(bucket)
+    session = request["session_id"]
+    for index, prompt in enumerate(["Task A\n保留换行", "  Task B\nnew goal  ", "Task A\n保留换行"]):
+        request.update(prompt=prompt, request_id=f"switch-{index}")
+        response = service.request("/infer", request)
+        assert response["session_id"] == session
+        assert service.engine.conditions["prompt"] == prompt
+    assert service.engine.calls == 3
