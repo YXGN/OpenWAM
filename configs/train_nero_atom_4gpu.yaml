@@ -1,0 +1,59 @@
+# First atom adaptation run: exactly 4 ranks, fresh Foundation initialization.
+# 99,956 overlapping windows / global batch 64 => 1,562 updates per epoch.
+# Four epochs => 6,248 updates; these are design choices, not tuned optima.
+defaults:
+  - train_nero_atom_cached_20261004
+  - _self_
+
+atom:
+  num_epochs: 4
+  save_steps: 1562  # One complete epoch with exactly four ranks and B16/GAS1.
+  archive_steps: [1562, 3124, 4686]  # Final epoch (6248) stays in the run directory.
+
+training:
+  debug: false
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  max_steps: null
+
+  # Adapt the action branch faster, while updating the generative backbone gently.
+  # Any other trainable modules use the base learning_rate.
+  learning_rate: 5e-5
+  action_lr: 5e-5
+  video_lr: 1e-5
+  adam_betas: [0.9, 0.95]
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  lr_scheduler: cosine
+  warmup_ratio: 0.05  # floor(6248 * .05) = 312 optimizer updates
+  # Existing scheduler uses ONE absolute eta_min for all parameter groups:
+  # 5e-5 * .02 = 1e-6 for both action and video, not a per-group multiplier.
+  lr_min_ratio: 0.02
+
+  lambda_video: 1.0
+  lambda_action: 1.0
+  mixed_precision: bf16
+  zero_stage: 2
+  zero2_cached_grad_nodes: true
+  cache_frozen_text_embeddings: true
+  use_gradient_checkpointing: true
+  use_gradient_checkpointing_offload: false
+  initialize_model_on_cpu: false
+  offload_optimizer_device: none
+  bound_optimizer_groups: false
+  dataset_num_workers: 4
+
+  output_path: outputs/nero_atom_4gpu
+  weight_archive_path: outputs/nero_atom_4gpu_weights
+  # Approx. 23.1 GiB per deployable weight file; ~198 GiB currently free.
+  # Keep early/middle weights + final; full optimizer states exceed this budget.
+  # This mode supports deployment / warm-start, NOT exact interrupted-run resume.
+  save_full_states_for_resume: false
+  keep_last_k_ckpts: 1
+
+project:
+  seed: 42
+  output_dir: outputs/nero_atom_4gpu_logs/${now:%Y-%m-%d_%H-%M-%S}
+  wandb:
+    project: openwam-nero-atom
+    run_name: nero-atom-4gpu-b16-e4-action5e-5-video1e-5

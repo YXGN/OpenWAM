@@ -1,0 +1,10 @@
+# Data preparation only. Training duration remains mandatory/unset.
+defaults:
+  - train_nero_atom_absolute
+  - _self_
+
+atom:
+  dataset_dir: /data2/xieweize/project/OpenWAM/outputs/nero_atom_20261004/lerobot
+  stats_dir: /data2/xieweize/project/OpenWAM/outputs/nero_atom_20261004/stats
+  foundation_ckpt: /data2/xieweize/project/OpenWAM/models/OpenWAM-Alpha-Pretrain-Foundation-Model/checkpoint_step_154000.safetensors
+  video_latent_cache_dir: null

@@ -1,0 +1,51 @@
+# Atom collection: reuse Nero's absolute EEF reader and the shared trainer.
+# Inherit the base recipe, NOT an old three-task run or hardware/resume profile.
+defaults:
+  - train
+  - override dataloader: nero_multitask_absolute
+  - _self_
+
+# Required inputs live outside inherited keys: OmegaConf's ??? does not clear
+# a concrete inherited value. Interpolation prevents fallback to the old data.
+atom:
+  # Exported LeRobot v2 + FK, never the raw atom/episodes directory.
+  dataset_dir: ???
+  stats_dir: ???
+  foundation_ckpt: ???
+  num_epochs: ???
+  save_steps: ???
+  archive_steps: ???
+  # Keep null while exporting/preencoding; set to this dataset's COMPLETE cache.
+  video_latent_cache_dir: null
+
+dataloader:
+  dataset_dir: ${atom.dataset_dir}
+  normalization_stats_path: ${atom.stats_dir}/normalization_stats.npy
+  video_latent_cache_dir: ${atom.video_latent_cache_dir}
+
+training:
+  finetune_ckpt_path: ${atom.foundation_ckpt}
+  resume_ckpt_path: null
+  output_path: outputs/nero_atom_absolute
+  # Reuse the audited Nero optimizations. The node cache validates the pinned
+  # DeepSpeed 0.18.5 implementation; it never reuses gradient values.
+  zero_stage: 2
+  zero2_cached_grad_nodes: true
+  cache_frozen_text_embeddings: true
+  # Set after export from actual windows / world size / batch size.
+  num_epochs: ${atom.num_epochs}
+  max_steps: null
+  save_steps: ${atom.save_steps}
+  save_full_states_for_resume: true
+  keep_last_k_ckpts: 2
+  # Explicit early/middle archive steps, positive multiples of save_steps.
+  # The last checkpoint is also retained by the shared trainer.
+  weight_archive_steps: ${atom.archive_steps}
+  weight_archive_path: outputs/nero_atom_absolute_weights
+
+project:
+  name: nero-atom
+  output_dir: outputs/nero_atom_logs/${now:%Y-%m-%d_%H-%M-%S}
+  wandb:
+    project: openwam-nero-atom
+    run_name: nero-atom-absolute

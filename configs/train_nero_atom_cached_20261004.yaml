@@ -1,0 +1,8 @@
+# Prepared atom snapshot: complete cache built on physical GPU 2.
+# Training duration / checkpoint schedule must still be chosen explicitly.
+defaults:
+  - preencode_nero_atom_20261004
+  - _self_
+
+atom:
+  video_latent_cache_dir: /data2/xieweize/project/OpenWAM/outputs/nero_atom_20261004/vae_cache
