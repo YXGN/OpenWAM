@@ -1,11 +1,14 @@
-# Nero 客户端协议：openwam_nero/v1
+# Nero 客户端协议：openwam/v1
 
 首次部署请先阅读[客户端与服务端 Quickstart](nero-client-server-quickstart.md)。
 
 本入口用于 Nero 的 `nero_multitask/eef_relative` 与
 `nero_multitask_absolute/eef` checkpoint。相对与绝对是模型内部表示；两者
 对外都使用 **body 坐标系、gripper_flange 末端的绝对 EEF20**。
-客户端选择 `--protocol openwam_nero`。旧 MoonCake `openwam_native` 不适用。
+客户端只选择 `--protocol openwam`，wire 为 `openwam/v1`。
+2026-10-10 将原 `openwam_nero` 原样更名；旧 `openwam_native` 兼容入口已删除，
+旧 `openwam_nero/v1` 名称也不再接受。客户端和服务端需要一起更新并重新连接。
+PNG、米制夹爪、会话检查和原 Nero 执行设置沿用。
 
 ## 服务端
 
@@ -25,8 +28,9 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 加载使用官方 `build_server_from_config`；预处理使用官方 `ObsPreprocessor`；
 每次请求直接调用一次 `JointInferenceEngine.generate`。服务端没有逐步动作队列。
-默认 10 步同步去噪、CFG=1、无 DiT 近似缓存、不解码预测视频，保留冻结 T5 prompt 缓存。
-这与已审计的开环评估基线一致；没有改模型、采样算法或训练权重。
+当前 `configs/deploy_nero.yaml` 默认 4 步同步去噪、CFG=1、无 DiT 近似缓存、
+不解码预测视频，保留冻结 T5 prompt 缓存。历史性能审计使用过 10 步；实际步数以
+启动配置及命令行覆盖后的日志为准，不把历史 10 步结果当作当前 4 步结果。
 现已显式开启静态动作索引、请求内 context/KV 复用和联合 Transformer CUDA Graph。
 优化范围与等价验证见[推理性能说明](nero-inference-performance.md)。追加
 `--disable-inference-fast-path` 可对照原 eager 路径；首次推理需要图预热和捕获。
@@ -79,9 +83,25 @@ XYZ/夹爪用 m，rot6D 是旋转矩阵前两列按列排列。
 下行保持官方模型输出：相对模型沿用其已有还原/投影；绝对模型原始预测可能略超范围，
 协议不新增隐藏裁剪。现有机器人运动层负责显式范围/速度约束，模型原始值应保留。
 
+2026-10-08新增可选服务端参数`--gripper-threshold-m 0.08`：在官方引擎反归一化后，
+仅将动作第9/19维（从0计数）按`width < 0.08 → 0 m`、`width >= 0.08 → 0.1 m`映射。
+默认不传参数仍保留连续输出；输入state和返回anchor_state始终保留实测宽度，手臂位姿不变。
+启用时握手和推理响应附带`gripper_threshold_m`，推理响应另外保留`raw_gripper_widths_m`
+（32×2，左/右，单位米），以区分原始预测与下发动作；既有checkpoint身份不代表映射设置。
+这是无滞回的逐节点阈值映射，既有客户端范围/速度约束继续有效。该模式仍可显式选择，
+但不再是Atom专用启动脚本的当前设置；不能将旧连续输出的实测结果记为阈值模式。
+
+2026-10-09用户反馈反复开合，并确认改用`--gripper-close-offset-m 0.002`。
+Atom启动脚本 `scripts/serve_openwam_atom_8017.sh` 使用此选项：`command_width_m = clip(raw_width_m - 0.002, 0, 0.1)`，
+仅处理输出第9/19维，输入state和手臂位姿保持原值。该选项与二值阈值互斥，不能叠加；
+两者都省略时仍是未经这两项处理的连续输出。握手／推理响应附带`gripper_close_offset_m`，
+推理响应保留同一套`raw_gripper_widths_m`。偏移按米值只执行一次，上下行均使用物理米值，不做归一化通信转换。
+该模式没有滞回或时序平滑；80mm附近的小波动不会再被阈值放大成100mm跳变，
+但模型本身的开度波动仍可能保留。真机效果尚待反馈，Atom入口和记录选项见[Quickstart](nero-client-server-quickstart.md)；实际进程状态需在部署主机核查。
+
 ## HTTP 合同
 
-JSON POST，`wire_format="openwam_nero/v1"`，最大请求 32 MiB：
+JSON POST，`wire_format="openwam/v1"`，最大请求 32 MiB：
 
 1. `/handshake`：提交完整 `velabot.io/v2` schema 和固定合同。服务端独立校验双臂
    顺序、rot6D、opening_width、米制及范围，回显校验后的设备约束；返回完整模型
@@ -110,7 +130,7 @@ identity 包含实际 checkpoint 名称、模型内部表示及 checkpoint/confi
 模型节点、控制采样、限幅后的关节目标与实测反馈是不同结果，不能混用。
 
 切换任务前必须停止策略；清空动作队列及 generation 后再用新任务启动。
-新旧协议的观测/执行设置不同，进入或离开 `openwam_nero` 需新建 Runtime。
+其他协议的观测/执行设置不同，进入或离开 `openwam` 需新建 Runtime。
 相对/绝对权重切换不需要更换协议或 Runtime，只需停止、重连新模型、再启动。
 
 当前是同步 receding-horizon，动作耗尽后请求新块，仍会有等待区间。原 eager 基线
@@ -132,4 +152,4 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 脚本通过 localhost 实际 HTTP，使用真实客户端 PNG 编码、codec、协商、动作队列和
 ActionDecoder，与直接调用官方引擎逐元素比较；覆盖三任务、每任务三个 anchor。
 不加载硬件 adapter、不创建机器人控制实例。CPU 回归另覆盖 observation builder、
-运行时 composition、过期响应、错误角色/单位以及旧协议保持原行为。
+运行时 composition、过期响应、错误角色/单位以及拒绝旧协议。

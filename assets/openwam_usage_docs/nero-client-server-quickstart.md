@@ -1,11 +1,50 @@
 # Nero 客户端与服务端 Quickstart
 
-适用版本：OpenWAM `6cdfd88`、VelaBot `86a72b3` 或包含这些功能的后续版本。
-协议为 `openwam_nero/v1`，客户端参数为 `--protocol openwam_nero`。
+适用版本：服务端和客户端均包含2026-10-10协议统一改名的版本。
+原 `openwam_nero` 已更名为 `openwam`，原 JPEG／归一化夹爪的旧 `openwam` 已移除；两端必须同步更新。
+协议为 `openwam/v1`，客户端参数为 `--protocol openwam`。
 
 本文在两个仓库同步维护：OpenWAM 的
 `assets/openwam_usage_docs/nero-client-server-quickstart.md` 与 VelaBot 的
 `docs/inference/openwam-nero-quickstart.md`。修改命令或合同后同时更新两份。
+
+## Atom 训练与推理入口
+
+2026-10-04 Atom 保存点复用本仓库的 Nero 绝对 EEF reader、训练器和联合推理引擎。
+
+| 环节 | 仓库入口 |
+|---|---|
+| 原始采集导出 | `scripts/data/export_nero_atom.py`，参数为 `--source`、`--output`、`--velabot-repo`；输出必须为空且位于原始数据目录外 |
+| 训练配置 | `configs/train_nero_atom_4gpu.yaml`，经 cached / preencode / absolute 配置继承共享训练配置 |
+| 训练入口 | `scripts/train_nero_monitored.py --config-name=train_nero_atom_4gpu`，使用四个分布式 rank |
+| A100 服务 | `scripts/serve_openwam_atom_8017.sh`、`configs/deploy_nero_atom_8017.yaml` |
+| 4090 服务 | `scripts/serve_openwam_atom_4090.sh`、`configs/deploy_nero_atom_4090.yaml`，T5 CPU、关闭 CUDA Graph |
+
+该训练配方为每卡 B16、梯度累积1、4 epochs；140条轨迹产生99,956个窗口，最终6248步。
+从 Foundation step154000 初始化，动作/base LR为5e-5、视频LR为1e-5，T5和VAE冻结。
+具体保存点使用其目录内的 `config.yaml` 和 `normalization_stats.npy`，不能用当前模板替换。
+该配方只保存权重，不保存完整优化器状态；可用于部署和重新初始化优化器后的微调，不能精确断点续训。
+
+配置中的数据、统计、Foundation及VAE缓存路径对应原服务器快照。迁移训练时显式覆盖
+`atom.dataset_dir`、`atom.stats_dir`、`atom.foundation_ckpt`、`atom.video_latent_cache_dir`，
+先用 `.venv/bin/python scripts/train.py --config-name=train_nero_atom_4gpu --cfg job --resolve`
+加相同覆盖项检查解析结果；VAE缓存必须与本次数据和编码设置匹配。
+
+原服务器保存点为 `outputs/nero_atom_4gpu/2026-10-04_15-00-03/`，部署需成套提供
+`checkpoint_step_6248.safetensors`、`config.yaml`、`normalization_stats.npy`和`tokenizer/`。
+数据、缓存、权重和服务记录属于外部产物，不随Git提交交付。
+
+Atom服务使用4步去噪、绝对EEF20、32节点、节点间隔1/60秒；夹爪仅在服务端执行一次
+`clip(raw_width - 0.002, 0, 0.1)`。机器人动作执行仍由客户端负责。原脚本是直接HTTP入口；
+通过独立 `real_world_inference` 框架接入时，应保持相同权重、配置和动作合同，勿同时占用8017。
+
+### 保存推理记录
+
+在直接服务入口追加 `--trace-dir /path/to/new-run --trace-level final` 可保存请求、输入条件、
+初始和最终latent及返回动作；`--trace-level steps` 额外保存每一步sigma、latent和预测速度。
+两种级别都不记录逐层K/V或客户端实际执行命令。默认不启用记录；GPU张量快照有开销。
+记录以完整 `manifest.json` 落盘为准，可通过 `openwam.deploy.trace_inspect.read_trace` 校验读取。
+原2026-10-13在线测试使用的是 `final` 级别，不能据此假定它包含逐步状态。
 
 ## 1. 准备目录与环境
 
@@ -143,11 +182,11 @@ export NERO_PROFILE=profiles/robots/agilex-nero-dual-arm.yaml
 
 uv run --no-sync vela-run plan \
   --robot "$NERO_PROFILE" --adapter agilex --device none \
-  --backend "$NERO_BACKEND" --protocol openwam_nero \
+  --backend "$NERO_BACKEND" --protocol openwam \
   --arm-format rot6d --strategy receding_horizon --policy-hz 60
 ```
 
-检查输出包含 `action_dim=20`、`backend=openwam_nero`、`horizon=32`、`rtc=False`，
+检查输出包含 `action_dim=20`、`backend=openwam`、`horizon=32`、`rtc=False`，
 且没有阻塞原因。`plan` 读取配置并向服务端握手，不打开机器人或相机，也不执行模型推理。
 它不能证明现场相机接线、图像新鲜度和机器人控制可用。
 
@@ -168,7 +207,7 @@ TASK
 
 uv run --no-sync vela-run run \
   --robot "$NERO_PROFILE" --adapter agilex --device none \
-  --backend "$NERO_BACKEND" --protocol openwam_nero \
+  --backend "$NERO_BACKEND" --protocol openwam \
   --arm-format rot6d --strategy receding_horizon \
   --policy-hz 60 --rate-hz 60 \
   --task "$NERO_TASK" \

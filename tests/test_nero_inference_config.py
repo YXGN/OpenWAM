@@ -63,8 +63,34 @@ def test_invalid_step_override_is_rejected(steps):
         inference_config(steps)
 
 
-@pytest.mark.parametrize("override", [False, True])
-def test_server_cli_resolves_yaml_and_overrides_before_loading(bucket, tmp_path, monkeypatch, caplog, override):
+@pytest.mark.parametrize("threshold", [0, -0.01, 0.1, float("nan"), float("inf"), True, "0.08"])
+def test_invalid_gripper_threshold_fails_before_checkpoint_access(tmp_path, threshold):
+    with pytest.raises(ValueError, match="gripper_threshold_m"):
+        nero_chunk_server.load_service(tmp_path / "missing", "fake.safetensors", gripper_threshold_m=threshold)
+
+
+@pytest.mark.parametrize("offset", [0, -0.002, 0.1, float("nan"), float("inf"), True, "0.002"])
+def test_invalid_gripper_offset_fails_before_checkpoint_access(tmp_path, offset):
+    with pytest.raises(ValueError, match="gripper_close_offset_m"):
+        nero_chunk_server.load_service(tmp_path / "missing", "fake.safetensors", gripper_close_offset_m=offset)
+
+
+def test_gripper_modes_are_mutually_exclusive_before_loading(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        nero_chunk_server.load_service(
+            tmp_path / "missing", "fake.safetensors", gripper_threshold_m=0.08, gripper_close_offset_m=0.002
+        )
+    argv = ["server", "--ckpt-dir", str(tmp_path / "missing"), "--ckpt-name", "fake.safetensors",
+            "--gripper-threshold-m", "0.08", "--gripper-close-offset-m", "0.002"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as exc:
+        nero_chunk_server.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("override", [None, "threshold", "close_offset"])
+@pytest.mark.parametrize("text_encoder_cpu", [False, True])
+def test_server_cli_resolves_yaml_and_overrides_before_loading(bucket, tmp_path, monkeypatch, caplog, override, text_encoder_cpu):
     from openwam.deploy import server as official_server
 
     _, dl, _, _ = bucket
@@ -77,8 +103,8 @@ def test_server_cli_resolves_yaml_and_overrides_before_loading(bucket, tmp_path,
     config_path = write_config(tmp_path / "deploy.yaml", denoise_steps=6, cuda_graph=False)
     seen = []
 
-    def build(deploy, ckpt_dir, device, ckpt_name):
-        seen.append((deploy, ckpt_dir, device, ckpt_name))
+    def build(deploy, ckpt_dir, device, ckpt_name, **placement):
+        seen.append((deploy, ckpt_dir, device, ckpt_name, placement))
         return SimpleNamespace(engine=object(), cfg=official_server.merge_deploy_cfg(training, deploy))
 
     monkeypatch.setattr(official_server, "build_server_from_config", build)
@@ -93,13 +119,17 @@ def test_server_cli_resolves_yaml_and_overrides_before_loading(bucket, tmp_path,
         ),
     )
     argv = ["nero", "--ckpt-dir", str(checkpoint), "--ckpt-name", "fake.safetensors", "--config", str(config_path)]
+    if text_encoder_cpu:
+        argv += ["--text-encoder-cpu"]
     if override:
         argv += ["--denoise-steps", "8", "--disable-inference-fast-path"]
+        argv += ["--gripper-threshold-m", "0.08"] if override == "threshold" else ["--gripper-close-offset-m", "0.002"]
     monkeypatch.setattr(sys, "argv", argv)
     with caplog.at_level(logging.INFO):
         nero_chunk_server.main()
     assert len(seen) == 1
-    cfg, path, device, name = seen[0]
+    cfg, path, device, name, placement = seen[0]
+    assert placement == ({"text_encoder_cpu": True} if text_encoder_cpu else {})
     assert cfg.inference.denoise_steps == (8 if override else 6)
     assert cfg.optimization.inference_fast_path.enabled is (not override)
     assert cfg.optimization.cuda_graph.enabled is False
@@ -107,6 +137,8 @@ def test_server_cli_resolves_yaml_and_overrides_before_loading(bucket, tmp_path,
     assert (path, device, name) == (str(checkpoint), "cuda:0", "fake.safetensors")
     assert lifecycle == ["serve", "close"]
     assert f"denoise_steps={8 if override else 6} fast_path={not override}" in caplog.text
+    assert f"gripper_threshold_m={0.08 if override == 'threshold' else None}" in caplog.text
+    assert f"gripper_close_offset_m={0.002 if override == 'close_offset' else None}" in caplog.text
 
 
 @pytest.mark.parametrize("steps, expected", [(None, 6), (8, 8)])

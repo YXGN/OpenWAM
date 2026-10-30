@@ -419,6 +419,15 @@ class JointInferenceEngine(BaseInferenceEngine):
         )
         if timing is not None:
             timing.mark("setup")
+        diagnostic_capture = conditions.get("diagnostic_capture")
+        if diagnostic_capture is not None:
+            generate_kwargs["diagnostic_capture"] = diagnostic_capture
+            diagnostic_capture("generation_config", {
+                "seed": generate_kwargs["seed"], "schedule": schedule,
+                "denoise_steps": denoise_steps, "denoise_mode": denoise_mode,
+                "cfg_scale": self._cfg_scale, "cfg_merge": self._cfg_merge,
+                "decode_video": self._decode_video,
+            })
         result = self.architecture.generate(**generate_kwargs)
         if timing is not None:
             timing.mark("other")

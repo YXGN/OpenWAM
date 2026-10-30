@@ -1,0 +1,6 @@
+# Same model/robot semantics as deploy_nero_atom_8017.yaml.
+# CPU T5 is selected by the launcher, before model placement.
+denoise_steps: 4
+inference_fast_path: true
+cuda_graph: false
+request_context_cache: true

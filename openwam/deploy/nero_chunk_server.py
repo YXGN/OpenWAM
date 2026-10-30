@@ -22,6 +22,7 @@ import numpy as np
 from omegaconf import OmegaConf
 from PIL import Image
 
+from openwam.deploy.inference_trace import TraceRecorder, config_snapshot, current_capture, traced_request
 from openwam.deploy.nero_contract import (
     DEFAULT_INFERENCE_CONFIG,
     conditions_from_observation,
@@ -30,7 +31,7 @@ from openwam.deploy.nero_contract import (
 )
 from openwam.deploy.obs_preprocess import ObsPreprocessor
 
-WIRE = "openwam_nero/v1"
+WIRE = "openwam/v1"
 ROLES = ("head_fpv", "left_hand", "right_hand")
 SERVER_ROLES = ("head_camera", "left_wrist_camera", "right_wrist_camera")
 CONTRACT = {
@@ -60,10 +61,27 @@ def finite_eef(value, shape, *, observation=False):
         a, b = arr[..., start : start + 3], arr[..., start + 3 : start + 6]
         if np.any(np.linalg.norm(a, axis=-1) < 1e-8) or np.any(np.linalg.norm(np.cross(a, b), axis=-1) < 1e-8):
             raise ValueError("Degenerate rot6D")
-    # Validate, never add a second gripper projection at the transport boundary.
+    # Validate raw values here; optional command mapping happens after generation.
     if observation and (np.any(arr[..., [9, 19]] < 0) or np.any(arr[..., [9, 19]] > np.float32(0.1))):
         raise ValueError("Gripper must be opening width in metres in [0, 0.1]")
     return arr
+
+
+def validate_gripper_threshold(value):
+    """None preserves continuous widths; a threshold is explicitly in metres."""
+    if value is not None and (type(value) not in (int, float) or not np.isfinite(value) or not 0 < value < 0.1):
+        raise ValueError("gripper_threshold_m must be finite and strictly between 0 and 0.1, or None")
+    return value
+
+
+def validate_gripper_options(threshold, close_offset):
+    validate_gripper_threshold(threshold)
+    if close_offset is not None and (
+        type(close_offset) not in (int, float) or not np.isfinite(close_offset) or not 0 < close_offset < 0.1
+    ):
+        raise ValueError("gripper_close_offset_m must be finite and strictly between 0 and 0.1, or None")
+    if threshold is not None and close_offset is not None:
+        raise ValueError("gripper_threshold_m and gripper_close_offset_m are mutually exclusive")
 
 
 def validate_schema(schema):
@@ -108,6 +126,21 @@ def file_sha256(path):
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def decode_images(images, *, image_format="PNG"):
+    if not isinstance(images, dict) or set(images) != set(SERVER_ROLES):
+        raise ValueError("All three named cameras are required")
+    decoded = {}
+    for role, encoded in images.items():
+        if not isinstance(encoded, str):
+            raise ValueError(f"Images must be base64 {image_format} strings")
+        raw = base64.b64decode(encoded, validate=True)
+        with Image.open(io.BytesIO(raw)) as im:
+            if im.format != image_format or im.mode != "RGB":
+                raise ValueError(f"Expected RGB {image_format}")
+            decoded[role] = im.copy()
+    return decoded
+
+
 def log_timing(request_id, trace):
     """One compact breakdown; durations are disjoint synchronized wall times."""
     stages = trace["stages"]
@@ -126,7 +159,10 @@ def log_timing(request_id, trace):
 
 
 class NeroChunkService:
-    def __init__(self, engine, cfg, identity):
+    def __init__(self, engine, cfg, identity, *, gripper_threshold_m=None, gripper_close_offset_m=None):
+        validate_gripper_options(gripper_threshold_m, gripper_close_offset_m)
+        self.gripper_threshold_m = gripper_threshold_m
+        self.gripper_close_offset_m = gripper_close_offset_m
         self.engine = engine
         self.cfg = cfg
         self.preprocessor = ObsPreprocessor.from_cfg(cfg, engine)
@@ -136,6 +172,20 @@ class NeroChunkService:
         self._logged_prompt = None
         self._prompt_revision = 0
 
+    def _decode_images(self, images):
+        return decode_images(images)
+
+    def _gripper_settings(self):
+        return {
+            key: value
+            for key, value in (
+                ("gripper_threshold_m", self.gripper_threshold_m),
+                ("gripper_close_offset_m", self.gripper_close_offset_m),
+            )
+            if value is not None
+        }
+
+    @traced_request
     def request(self, path, payload, *, timing_trace=None):
         request_started = time.monotonic()
         profile = bool(getattr(self.engine, "_profile", False))
@@ -150,7 +200,7 @@ class NeroChunkService:
                 self._session = uuid.uuid4().hex
                 return dict(
                     ok=True,
-                    backend="openwam_nero",
+                    backend="openwam",
                     wire_format=WIRE,
                     action_dim=20,
                     action_horizon=32,
@@ -163,6 +213,7 @@ class NeroChunkService:
                     checkpoint=self.identity["checkpoint"],
                     identity=self.identity,
                     session_id=self._session,
+                    **self._gripper_settings(),
                 )
             if not self._session or payload.get("session_id") != self._session:
                 raise ValueError("A current handshake is required")
@@ -179,21 +230,15 @@ class NeroChunkService:
                 raise ValueError("An explicit task prompt is required")
             state = finite_eef(payload.get("state"), (20,), observation=True)
             images = payload.get("images")
-            if not isinstance(images, dict) or set(images) != set(SERVER_ROLES):
-                raise ValueError("All three named cameras are required")
             decode_started = time.monotonic() if profile else None
-            decoded = {}
-            for role, encoded in images.items():
-                if not isinstance(encoded, str):
-                    raise ValueError("Images must be base64 PNG strings")
-                raw = base64.b64decode(encoded, validate=True)
-                with Image.open(io.BytesIO(raw)) as im:
-                    if im.format != "PNG" or im.mode != "RGB":
-                        raise ValueError("Expected lossless RGB PNG")
-                    decoded[role] = im.copy()
+            decoded = self._decode_images(images)
             decode_finished = time.monotonic() if profile else None
             obs = dict(images=decoded, state=state, prompt=payload["prompt"])
             conditions = conditions_from_observation(self.preprocessor, obs, 42)
+            capture = current_capture()
+            if capture is not None:
+                capture("conditions", conditions)
+                conditions["diagnostic_capture"] = capture
             runner = getattr(getattr(self.engine, "architecture", None), "_mot_cuda_graph_runner", None)
             captures_before = runner.status(include_signature=False)["capture_count"] if profile and runner else 0
             started = time.monotonic()
@@ -204,6 +249,26 @@ class NeroChunkService:
             if hasattr(actions, "detach"):
                 actions = actions.detach().cpu().numpy()
             actions = finite_eef(actions, (32, 20))
+            if capture is not None:
+                capture("model_output", {"actions_eef20_before_gripper_mapping": actions,
+                                         "video_decoded": result.get("video")})
+            gripper_metadata = {}
+            if self.gripper_threshold_m is not None or self.gripper_close_offset_m is not None:
+                # Advanced indexing copies the two raw width columns for diagnostics.
+                raw_widths = actions[:, [9, 19]]
+                if self.gripper_threshold_m is not None:
+                    actions[:, [9, 19]] = np.where(
+                        raw_widths >= np.float32(self.gripper_threshold_m), np.float32(0.1), np.float32(0.0)
+                    )
+                else:
+                    # Apply the physical-width offset once; the wire also uses metres.
+                    actions[:, [9, 19]] = np.clip(
+                        raw_widths - np.float32(self.gripper_close_offset_m), np.float32(0.0), np.float32(0.1)
+                    )
+                gripper_metadata = dict(
+                    **self._gripper_settings(),
+                    raw_gripper_widths_m=raw_widths.tolist(),
+                )
             inference_sec = time.monotonic() - started
             response = dict(
                 ok=True,
@@ -216,6 +281,7 @@ class NeroChunkService:
                 action_horizon=32,
                 dt_sec=1 / 60,
                 anchor_state=state.tolist(),
+                **gripper_metadata,
             )
             response["server_total_sec"] = time.monotonic() - request_started
             prompt = conditions["prompt"]
@@ -225,6 +291,11 @@ class NeroChunkService:
                 self._logged_prompt = prompt
             runner = getattr(getattr(self.engine, "architecture", None), "_mot_cuda_graph_runner", None)
             backend = "eager" if runner is None else runner.status(include_signature=False)["last_backend"]
+            if capture is not None:
+                capture("execution_metadata", {"backend": backend,
+                        "graph_captures_before": captures_before,
+                        "engine_inference_sec": inference_sec,
+                        "server_total_sec_before_response": response["server_total_sec"]})
             # Keep multiline prompts on one log line, without altering model input.
             logging.info(
                 "infer id=%r prompt=P%d infer_ms=%.1f server_ms=%.1f backend=%s%s",
@@ -247,6 +318,7 @@ class NeroChunkService:
                 stages["other"] = stages.get("other", 0.0) + remainder
                 trace = {} if timing_trace is None else timing_trace
                 trace.update(
+                    request_id=request_id,
                     stages=stages,
                     total_ms=total_ms,
                     t5_cache_hit=result.get("t5_cache_hit"),
@@ -296,7 +368,7 @@ def make_http_server(service, host="127.0.0.1", port=8849):
                 stages["response"] = (finished - response_started) * 1000
                 trace["total_ms"] = (finished - received) * 1000
                 stages["other"] += max(0.0, trace["total_ms"] - sum(stages.values()))
-                log_timing(payload["request_id"], trace)
+                log_timing(trace["request_id"], trace)
 
         def log_message(self, fmt, *args):
             logging.info(fmt, *args)
@@ -310,8 +382,18 @@ def make_http_server(service, host="127.0.0.1", port=8849):
 
 
 def load_service(
-    ckpt_dir, ckpt_name, device="cuda:0", *, fast_path=None, denoise_steps=None, config_path=DEFAULT_INFERENCE_CONFIG
+    ckpt_dir,
+    ckpt_name,
+    device="cuda:0",
+    *,
+    fast_path=None,
+    denoise_steps=None,
+    config_path=DEFAULT_INFERENCE_CONFIG,
+    gripper_threshold_m=None,
+    gripper_close_offset_m=None,
+    text_encoder_cpu=False,
 ):
+    validate_gripper_options(gripper_threshold_m, gripper_close_offset_m)
     from openwam.deploy.server import build_server_from_config
 
     deploy = inference_config(denoise_steps, fast_path=fast_path, config_path=config_path)
@@ -326,8 +408,12 @@ def load_service(
         identity[key + "_sha256"] = file_sha256(root / name)
     # Keep synchronous joint inference. No RTC, approximate
     # DiT cache, future video conditioning, or extra classifier-free guidance.
-    server = build_server_from_config(deploy, str(root), device, ckpt_name)
-    return NeroChunkService(server.engine, server.cfg, identity)
+    placement = {"text_encoder_cpu": True} if text_encoder_cpu else {}
+    server = build_server_from_config(deploy, str(root), device, ckpt_name, **placement)
+    return NeroChunkService(
+        server.engine, server.cfg, identity,
+        gripper_threshold_m=gripper_threshold_m, gripper_close_offset_m=gripper_close_offset_m,
+    )
 
 
 def main():
@@ -335,12 +421,33 @@ def main():
     parser.add_argument("--ckpt-dir", type=Path, required=True)
     parser.add_argument("--ckpt-name", required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--text-encoder-cpu", action="store_true",
+        help="Keep Wan T5 on CPU and cache prompt embeddings; preserves the checkpoint dtype",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8849)
     parser.add_argument("--config", type=Path, default=DEFAULT_INFERENCE_CONFIG, help="Nero inference YAML")
     parser.add_argument("--denoise-steps", type=int, help="Override YAML denoise_steps")
     parser.add_argument("--disable-inference-fast-path", action="store_true", help="Use eager inference for comparison")
+    gripper = parser.add_mutually_exclusive_group()
+    gripper.add_argument(
+        "--gripper-threshold-m",
+        type=float,
+        help="Map both output widths below this threshold to 0 m, otherwise 0.1 m; default: continuous widths",
+    )
+    gripper.add_argument(
+        "--gripper-close-offset-m", type=float,
+        help="Subtract this many metres from both predicted widths, then clip to [0, 0.1]; default: unmodified widths",
+    )
+    parser.add_argument("--trace-dir", type=Path, help="New output directory for opt-in inference traces")
+    parser.add_argument("--trace-level", choices=("final", "steps"), default="final")
+    parser.add_argument("--trace-max-pending", type=int, default=2)
     args = parser.parse_args()
+    if args.trace_dir is not None and args.trace_dir.exists():
+        parser.error("--trace-dir must be a new directory")
+    if args.trace_max_pending < 1:
+        parser.error("--trace-max-pending must be >= 1")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     service = load_service(
         args.ckpt_dir,
@@ -349,20 +456,48 @@ def main():
         fast_path=False if args.disable_inference_fast_path else None,
         denoise_steps=args.denoise_steps,
         config_path=args.config,
+        gripper_threshold_m=args.gripper_threshold_m,
+        gripper_close_offset_m=args.gripper_close_offset_m,
+        text_encoder_cpu=args.text_encoder_cpu,
     )
+    if args.trace_dir is not None:
+        import platform
+
+        import torch
+        source_paths = sorted(Path(__file__).parents[1].rglob("*.py"))
+        service.trace_recorder = TraceRecorder(
+            args.trace_dir, level=args.trace_level, max_pending=args.trace_max_pending,
+            run_metadata={"identity": service.identity,
+                          **config_snapshot(service.cfg),
+                          "gripper_mapping": service._gripper_settings(),
+                          "torch": str(torch.__version__), "python": platform.python_version(),
+                          "cuda": torch.version.cuda, "device": args.device,
+                          "contract": CONTRACT,
+                          "architecture": type(service.engine.architecture).__name__,
+                          "model_dtype": str(service.engine.architecture.dtype),
+                          "source_sha256": {str(p): file_sha256(p) for p in source_paths}},
+        )
+        logging.info("inference_trace enabled dir=%s level=%s max_pending=%d; CPU snapshot cost is included in latency",
+                     args.trace_dir, args.trace_level, args.trace_max_pending)
     server = make_http_server(service, args.host, args.port)
     logging.info(
-        "ready http://%s:%d checkpoint=%s mode=%s denoise_steps=%d fast_path=%s",
+        "ready http://%s:%d wire=%s checkpoint=%s mode=%s denoise_steps=%d fast_path=%s gripper_threshold_m=%s gripper_close_offset_m=%s text_encoder_cpu=%s",
         *server.server_address[:2],
+        WIRE,
         args.ckpt_dir / args.ckpt_name,
         service.identity["model_representation"],
         service.cfg.inference.denoise_steps,
         service.cfg.optimization.inference_fast_path.enabled,
+        service.gripper_threshold_m,
+        service.gripper_close_offset_m,
+        args.text_encoder_cpu,
     )
     try:
         server.serve_forever()
     finally:
         server.server_close()
+        if getattr(service, "trace_recorder", None) is not None:
+            service.trace_recorder.close()
 
 
 if __name__ == "__main__":

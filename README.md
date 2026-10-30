@@ -395,6 +395,8 @@ Wan2.2-TI2V-5B video backbone, and the Mutual attention mask.
 
 ## OpenWAM Usage Guidance
 
+Nero Atom users migrating the current policy to a local RTX 4090: see the [migration handoff](migration/nero_4090/README.md) for the frozen rsync bundle, low-memory launcher and alignment checks.
+
 OpenWAM is configured through composable Hydra YAML files. Select an architecture,
 backbone, dataloader, and runtime behavior by changing configuration values or
 overriding them on the command line. The task guides below are the maintained

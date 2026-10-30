@@ -62,6 +62,8 @@ def load_from_checkpoint_dir(
     ckpt_dir: str,
     device: str = "cuda",
     ckpt_name: Optional[str] = None,
+    *,
+    text_encoder_cpu: bool = False,
 ) -> Tuple[DictConfig, BaseWAMArchitecture]:
     """Load full model from a self-contained checkpoint directory.
 
@@ -74,6 +76,9 @@ def load_from_checkpoint_dir(
         device: Target device (e.g. ``"cuda"`` or ``"cuda:0"``).
         ckpt_name: Specific checkpoint filename.  If *None*, the latest
             (highest step number) checkpoint is used.
+        text_encoder_cpu: Keep Wan's text encoder on CPU at the checkpoint
+            dtype. The denoiser and VAE still use ``device``. Opt-in for
+            small-memory inference hosts; does not change checkpoint assets.
 
     Returns:
         ``(cfg, architecture)`` — the resolved config and architecture
@@ -211,7 +216,7 @@ def load_from_checkpoint_dir(
     model_dtype = _DTYPE_MAP.get(str(_mp).strip().lower(), torch.bfloat16)
     logger.info("Loading all models with dtype=%s (mixed_precision=%s)", model_dtype, _mp)
 
-    architecture.set_dtype_device(model_dtype, torch.device(device))
+    _place_deploy_model(architecture, model_dtype, torch.device(device), text_encoder_cpu=text_encoder_cpu)
     architecture.eval()
 
     # 6. Attach the action normalizer built from saved normalization_stats.npy + config.
@@ -232,6 +237,32 @@ def load_from_checkpoint_dir(
 
     logger.info("Model loaded successfully on %s", device)
     return cfg, architecture
+
+
+def _place_deploy_model(architecture, dtype, device, *, text_encoder_cpu=False):
+    """Place Wan T5 separately without ever staging its weights on the GPU.
+
+    Moving the complete architecture to CUDA and then offloading T5 can OOM
+    before offloading is reached. Temporarily detach only that registered
+    child during the existing top-down placement; restore it even on failure.
+    """
+    if not text_encoder_cpu:
+        architecture.set_dtype_device(dtype, device)
+        return
+
+    from openwam.model.video_backbone.wan_backbone import WanBase
+
+    backbone = getattr(architecture, "video_backbone", None)
+    if not isinstance(backbone, WanBase) or backbone.text_encoder is None:
+        raise ValueError("text_encoder_cpu requires a Wan backbone with a text encoder")
+    encoder = backbone.text_encoder
+    backbone.text_encoder = None
+    try:
+        architecture.set_dtype_device(dtype, device)
+    finally:
+        backbone.text_encoder = encoder
+    encoder.to(dtype=dtype, device=torch.device("cpu"))
+    logger.info("Wan text encoder stays on CPU with dtype=%s; other model components use %s", dtype, device)
 
 
 def repr_contract_from_cfg(cfg: DictConfig) -> dict:

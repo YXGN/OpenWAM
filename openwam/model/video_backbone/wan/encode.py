@@ -88,7 +88,12 @@ def encode_text_for_inference(
         return vace_cache["context"], vace_cache["seq_lens"]
     if prompt_embed_cache is not None and prompt in prompt_embed_cache:
         return prompt_embed_cache[prompt]
-    context, seq_lens = encode_text([prompt], tokenizer=tokenizer, text_encoder=text_encoder, device=device)
+    # T5 may reside on CPU for low-memory deployment. Tokenization, padding,
+    # masks and encoder math stay unchanged; move only the resulting context
+    # to the denoiser's device. Cached tensors already live on that device.
+    encoder_device = next(text_encoder.parameters()).device
+    context, seq_lens = encode_text([prompt], tokenizer=tokenizer, text_encoder=text_encoder, device=encoder_device)
+    context, seq_lens = context.to(device=device), seq_lens.to(device=device)
     if prompt_embed_cache is not None:
         prompt_embed_cache[prompt] = (context, seq_lens)
     return context, seq_lens

@@ -1,0 +1,5 @@
+# Isolated Atom deployment configuration; uses the existing Nero HTTP engine.
+denoise_steps: 4
+inference_fast_path: true
+cuda_graph: true
+request_context_cache: true

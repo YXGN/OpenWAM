@@ -332,6 +332,8 @@ def build_server_from_config(
     ckpt_dir: str,
     device: str = "cuda",
     ckpt_name: Optional[str] = None,
+    *,
+    text_encoder_cpu: bool = False,
 ):
     """Build a PolicyServer from a self-contained checkpoint directory.
 
@@ -348,7 +350,8 @@ def build_server_from_config(
     deploy_cfg = cfg if cfg is not None else OmegaConf.create({})
     _validate_inference_config(deploy_cfg)
     _normalize_compile_enabled_in_cfg(deploy_cfg)
-    training_cfg, architecture = load_from_checkpoint_dir(ckpt_dir, device=device, ckpt_name=ckpt_name)
+    placement = {"text_encoder_cpu": True} if text_encoder_cpu else {}
+    training_cfg, architecture = load_from_checkpoint_dir(ckpt_dir, device=device, ckpt_name=ckpt_name, **placement)
     merged = merge_deploy_cfg(training_cfg, deploy_cfg)
     engine = JointInferenceEngine(cfg=merged, architecture=architecture)
     return PolicyServer(engine=engine, cfg=merged)

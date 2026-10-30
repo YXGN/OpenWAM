@@ -54,7 +54,7 @@ def schema():
     }
 
 
-def setup_service(bucket):
+def setup_service(bucket, *, gripper_threshold_m=None, gripper_close_offset_m=None):
     _, dl, eefs, _ = bucket
     cfg = OmegaConf.create({"dataloader": OmegaConf.to_container(dl)})
     state = eefs[0][0].copy()
@@ -71,7 +71,10 @@ def setup_service(bucket):
             return {"actions": outputs.copy()}
 
     engine = Engine()
-    service = NeroChunkService(engine, cfg, {"checkpoint": "fake", "model_representation": "eef"})
+    service = NeroChunkService(
+        engine, cfg, {"checkpoint": "fake", "model_representation": "eef"},
+        gripper_threshold_m=gripper_threshold_m, gripper_close_offset_m=gripper_close_offset_m,
+    )
     reply = service.request("/handshake", dict(wire_format=WIRE, contract=CONTRACT, io_schema=schema()))
     rng = np.random.default_rng(14)
     images = {role: Image.fromarray(rng.integers(0, 256, (360, 640, 3), dtype=np.uint8)) for role in SERVER_ROLES}
@@ -107,6 +110,80 @@ def test_one_generation_and_exact_observation_and_output(bucket):
             assert direct[key] == service.engine.conditions[key]
     np.testing.assert_array_equal(reply["actions"], outputs)
     np.testing.assert_array_equal(reply["anchor_state"], request["state"])
+    assert "gripper_threshold_m" not in reply
+    assert "gripper_close_offset_m" not in reply
+    assert "raw_gripper_widths_m" not in reply
+
+
+def test_gripper_threshold_changes_only_output_widths_and_preserves_raw_values(bucket):
+    service, request, images, outputs = setup_service(bucket, gripper_threshold_m=0.08)
+    threshold = np.float32(0.08)
+    widths = np.array(
+        [
+            -0.001,
+            0,
+            0.027,
+            0.049,
+            np.nextafter(threshold, np.float32(0)),
+            threshold,
+            np.nextafter(threshold, np.float32(1)),
+            0.1,
+            0.1004,
+        ],
+        dtype=np.float32,
+    )
+    outputs[:, 9] = np.resize(widths, 32)
+    outputs[:, 19] = np.resize(widths[::-1], 32)
+    original = outputs.copy()
+    # Check the same policy is advertised on handshake and applied by /infer.
+    handshake = service.request("/handshake", dict(wire_format=WIRE, contract=CONTRACT, io_schema=schema()))
+    assert handshake["gripper_threshold_m"] == 0.08
+    request["session_id"] = handshake["session_id"]
+    reply = service.request("/infer", request)
+    expected = original.copy()
+    expected[:, 9] = np.resize([0, 0, 0, 0, 0, 0.1, 0.1, 0.1, 0.1], 32)
+    expected[:, 19] = np.resize([0.1, 0.1, 0.1, 0.1, 0, 0, 0, 0, 0], 32)
+    np.testing.assert_array_equal(reply["actions"], expected)
+    np.testing.assert_array_equal(reply["raw_gripper_widths_m"], original[:, [9, 19]])
+    np.testing.assert_array_equal(outputs, original)
+    np.testing.assert_array_equal(reply["anchor_state"], request["state"])
+    direct = conditions_from_observation(
+        service.preprocessor, dict(images=images, state=request["state"], prompt=request["prompt"]), 42
+    )
+    np.testing.assert_array_equal(service.engine.conditions["proprio"], direct["proprio"])
+    assert reply["gripper_threshold_m"] == 0.08
+    assert service.engine.calls == 1
+    json.dumps(reply, allow_nan=False)
+
+
+def test_gripper_close_offset_is_continuous_in_metres_and_preserves_state_and_pose(bucket):
+    service, request, images, outputs = setup_service(bucket, gripper_close_offset_m=0.002)
+    raw = [-0.001, 0, 0.001, 0.002, 0.003, 0.027, 0.079, 0.080, 0.081, 0.100, 0.1004, 0.103]
+    commanded = [0, 0, 0, 0, 0.001, 0.025, 0.077, 0.078, 0.079, 0.098, 0.0984, 0.1]
+    outputs[:, 9] = np.resize(raw, 32)
+    outputs[:, 19] = np.resize(raw[::-1], 32)
+    original = outputs.copy()
+    handshake = service.request("/handshake", dict(wire_format=WIRE, contract=CONTRACT, io_schema=schema()))
+    assert handshake["gripper_close_offset_m"] == 0.002 and "gripper_threshold_m" not in handshake
+    request["session_id"] = handshake["session_id"]
+    pose_dims = [d for d in range(20) if d not in (9, 19)]
+    # Repeat requests: no cumulative subtraction, engine-array mutation, or hidden latch.
+    for _ in range(2):
+        reply = service.request("/infer", request)
+        actions = np.asarray(reply["actions"])
+        np.testing.assert_allclose(actions[:, 9], np.resize(commanded, 32), atol=1e-8, rtol=0)
+        np.testing.assert_allclose(actions[:, 19], np.resize(commanded[::-1], 32), atol=1e-8, rtol=0)
+        np.testing.assert_array_equal(actions[:, pose_dims], original[:, pose_dims])
+        np.testing.assert_array_equal(reply["raw_gripper_widths_m"], original[:, [9, 19]])
+        np.testing.assert_array_equal(outputs, original)
+        np.testing.assert_array_equal(reply["anchor_state"], request["state"])
+        assert reply["gripper_close_offset_m"] == 0.002 and "gripper_threshold_m" not in reply
+    direct = conditions_from_observation(
+        service.preprocessor, dict(images=images, state=request["state"], prompt=request["prompt"]), 42
+    )
+    np.testing.assert_array_equal(service.engine.conditions["proprio"], direct["proprio"])
+    assert service.engine.calls == 2
+    json.dumps(reply, allow_nan=False)
 
 
 def test_reset_invalidates_old_session(bucket):

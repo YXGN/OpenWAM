@@ -1401,6 +1401,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         cfg_scale: float = 1.0,
         cfg_merge: bool = False,
         active_action_mask: Optional[Tensor] = None,
+        diagnostic_capture=None,
         **extra_pipeline_inputs: Any,
     ) -> dict:
         """Execute joint video-action denoising driven by a schedule.
@@ -1528,6 +1529,17 @@ class BaseWAMArchitecture(ABC, nn.Module):
         num_train_ts_v = float(self.video_scheduler.num_train_timesteps)
         num_train_ts_a = float(self.action_scheduler.num_train_timesteps)
 
+        if diagnostic_capture is not None:
+            diagnostic_capture("initial", {
+                "video_latents": inputs_shared["latents"], "action_latents": action_latents,
+                "current_latents": inputs_shared.get("first_frame_latents"),
+                "proprio_model": inputs_shared.get("proprio"),
+                "text_context": inputs_shared.get("context"),
+                "schedule": schedule, "seed": seed,
+                "video_num_train_timesteps": num_train_ts_v,
+                "action_num_train_timesteps": num_train_ts_a,
+                "inactive_action_dims": inactive_action_dims,
+            })
         t_loop = time.time()
         if timing is not None:
             timing.mark("setup")
@@ -1587,6 +1599,14 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 if dit_cache is not None and video_stepping:
                     dit_cache.update(noise_pred, sigma_v, action_noise_pred)
 
+            if diagnostic_capture is not None:
+                diagnostic_capture(f"step/{i}", {
+                    "sigma_video": sigma_v, "sigma_action": sigma_a,
+                    "sigma_video_next": sigma_v_next, "sigma_action_next": sigma_a_next,
+                    "video_latents_before": inputs_shared["latents"],
+                    "action_latents_before": action_latents,
+                    "video_velocity": noise_pred, "action_velocity": action_noise_pred,
+                })
             if video_stepping:
                 new_latents = inputs_shared["latents"] + noise_pred * (sigma_v_next - sigma_v)
                 ref_latents = inputs_shared.get("first_frame_latents")
@@ -1623,6 +1643,11 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 torch.cuda.synchronize()
             logger.info("[WAM_PROFILE] denoising_loop: %.3fs", time.time() - t_loop)
 
+        if diagnostic_capture is not None:
+            diagnostic_capture("final_latents", {
+                "video_latents": inputs_shared["latents"], "action_latents": action_latents,
+                "tiled": tiled,
+            })
         # VAE decode. Fail-fast when the backbone is wired to an irreversible
         # external encoder — silently returning None would mask a config
         # mismatch (caller asked for pixels but the encoder cannot produce them).

@@ -37,7 +37,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 .venv/bin/python -m openwam.evaluation.
 
 CPU 数据预检：添加 `--audit-only`，检查合同、全数据集 fingerprint、GT 归一化往返和当前图像，保存 `audit.npz` 与拼图，不加载 GPU 模型。
 
-与 Nero 服务共用 `configs/deploy_nero.yaml`，默认去噪 10 步。可用 `--config /path/to/deploy_nero.yaml`
+与 Nero 服务共用 `configs/deploy_nero.yaml`，默认去噪步数由该文件决定（2026-10-05 核对为 4 步；早期审计使用过 10 步）。可用 `--config /path/to/deploy_nero.yaml`
 指定完整的四参数配置，或用 `--denoise-steps 8` 临时覆盖步数；命令行优先。
 评估 manifest 保存实际生效的步数与推理配置。减少步数会改变预测，不改变 32 帧动作块长度。
 
@@ -56,7 +56,7 @@ CPU 数据预检：添加 `--audit-only`，检查合同、全数据集 fingerpri
 | 相对动作 | p_future−p_t，R_tᵀR_future；整个 chunk 固定锚点；夹爪绝对 |
 | 状态统计 | 对应 checkpoint 的 `<action_mode>_state` |
 | 动作统计 | 对应 checkpoint 的 `<action_mode>`；不重新统计 |
-| 推理 | 默认同步去噪 10 步，CFG=1，seed=42，可显式指定 seed / 去噪步数 |
+| 推理 | 同步去噪，默认步数读取 `configs/deploy_nero.yaml`（本次核对为 4），CFG=1，seed=42，可显式指定 seed / 去噪步数 |
 | 推理优化 | YAML 控制静态索引、请求内 KV、CUDA Graph；文本 embedding 缓存开启，compile、DiT 跳步缓存、视频解码关闭 |
 
 关闭视频解码不代表去掉视频分支，联合视频—动作去噪仍执行。训练 VAE 的完整未来视频缓存不进入评估，当前图像按官方推理路径编码。只有当前状态、图像、任务文字和显式推理参数进入 `conditions`。

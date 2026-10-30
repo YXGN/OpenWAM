@@ -33,7 +33,7 @@ def main():
     from velabot.inference.client import negotiate
     from velabot.inference.intents import ActionDecoder
     from velabot.inference.protocol import ProtocolTransport
-    from velabot.inference.protocol.openwam_nero import NeroOpenWAMCodec
+    from velabot.inference.protocol.openwam import OpenWAMCodec
     from velabot.inference.rotation import pose_matrix_from_rot6d
     from velabot.inference.transport import HttpJsonTransport
 
@@ -52,7 +52,7 @@ def main():
     http = make_http_server(service, port=0)
     thread = threading.Thread(target=http.serve_forever, daemon=True)
     thread.start()
-    codec = NeroOpenWAMCodec(schema)
+    codec = OpenWAMCodec(schema)
     transport = ProtocolTransport(HttpJsonTransport(f"http://127.0.0.1:{http.server_port}"), codec)
     info = json.loads((args.dataset / "meta/info.json").read_text())
     episodes = {e["episode_index"]: e for e in read_jsonl(args.dataset / "meta/episodes.jsonl")}

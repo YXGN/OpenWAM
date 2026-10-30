@@ -63,7 +63,7 @@ def main():
     anchor = (len(states) - 33) // 2
     obs = current_observation(args.dataset, info, 242, anchor, states[anchor], prompts[0])
     descriptor = load_descriptor(args.client_root / "profiles/robots/agilex-nero-dual-arm.yaml")
-    schema = schema_for(descriptor=descriptor, protocol="openwam_nero")
+    schema = schema_for(descriptor=descriptor, protocol="openwam")
     clock = ManualClock(start_monotonic_ns=1_000_000_000)
     stamp = clock.monotonic_ns()
     frames = {}
@@ -117,7 +117,7 @@ def main():
         builder=builder,
         connect=lambda *a: None,
         apply_rate=lambda *a: None,
-        config=PolicyConfig(protocol="openwam_nero", rate_hz=60, task=prompts[0]),
+        config=PolicyConfig(protocol="openwam", rate_hz=60, task=prompts[0]),
     )
     panel = InferencePanel(policy_session=session, controller=controller)
     recording = CollectPanel(recorder=SimpleNamespace(), session=session)
@@ -131,7 +131,7 @@ def main():
     thread = threading.Thread(target=http.serve_forever, daemon=True)
     thread.start()
     transport = ProtocolTransport(
-        HttpJsonTransport(f"http://127.0.0.1:{http.server_port}"), codec_for("openwam_nero", schema, descriptor)
+        HttpJsonTransport(f"http://127.0.0.1:{http.server_port}"), codec_for("openwam", schema, descriptor)
     )
     entered, release = threading.Event(), threading.Event()
     received, architecture_prompts, text_calls, records, outputs = [], [], [], [], []
