@@ -1,0 +1,12 @@
+{
+  "name": "nero_robot",
+  "dataset_root": "${DATASET_ROOT}",
+  "foundation_checkpoint": "${OPENWAM_FOUNDATION_CHECKPOINT}",
+  "output_dir": "${TRAIN_OUTPUT_DIR}",
+  "profile": "nero_fk_v2",
+  "action_mode": "relative",
+  "num_devices": 1,
+  "per_device_batch_size": 1,
+  "epochs": 1,
+  "gradient_accumulation_steps": 1
+}

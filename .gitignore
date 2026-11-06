@@ -185,7 +185,6 @@ cython_debug/
 # Claude Code
 .claude/
 CLAUDE.md
-AGENTS.md
 
 # Benchmark client eval outputs (metrics, videos, per-job logs).
 # The glob also covers archived runs kept alongside, e.g. _eval_out_bad/.
@@ -216,3 +215,8 @@ assets/*
 # Versioned RoboDojo score verification (see issue #23).
 !assets/robodojo_verification/
 !assets/robodojo_verification/**
+
+# Local training recipes and run products
+/local_configs/
+/runs/
+.ruff_cache/
