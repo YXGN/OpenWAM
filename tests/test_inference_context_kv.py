@@ -272,6 +272,7 @@ class TestPreparedContextKV(TestCase):
         architecture.video_backbone = _Video()
         architecture.action_backbone = _Action()
         architecture._mot_driver = _Driver()
+        architecture._gradient_checkpointing_layers = None
         architecture._mot_cuda_graph_runner = None
         architecture._compiled_mot_run_joint_loop = None
         architecture._request_context_cache_enabled = True

@@ -170,6 +170,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
                 astate,
                 use_gradient_checkpointing=False,
                 use_gradient_checkpointing_offload=False,
+                gradient_checkpointing_layers=self._gradient_checkpointing_layers,
             )
 
         kwargs = torch_compile_kwargs(section, default_mode="reduce-overhead")
@@ -435,6 +436,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
                     astate,
                     use_gradient_checkpointing=use_gradient_checkpointing,
                     use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+                    gradient_checkpointing_layers=self._gradient_checkpointing_layers,
                 )
         else:
             vstate, astate = driver.run_joint_loop(
@@ -442,6 +444,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
                 astate,
                 use_gradient_checkpointing=use_gradient_checkpointing,
                 use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+                gradient_checkpointing_layers=self._gradient_checkpointing_layers,
             )
         return vb.finalize(vstate), ab.extract_prediction(astate)
 

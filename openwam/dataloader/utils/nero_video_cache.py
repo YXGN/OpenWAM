@@ -163,12 +163,7 @@ def prepare_cached_ti2v(backbone, latents, geometry, text):
         raise ValueError("Incompatible preencoded video shape/dtype/geometry")
     if any(m.training for m in backbone.vae.modules()) or any(p.requires_grad for p in backbone.vae.parameters()):
         raise ValueError("Video cache requires a frozen, eval-mode VAE")
-    if backbone._training_text_cache is None:
-        context, seq_lens = encode.encode_text(
-            text, tokenizer=backbone._tokenizer, text_encoder=backbone.text_encoder, device=backbone.device
-        )
-    else:
-        context, seq_lens = backbone._training_text_cache.encode(text, device=backbone.device)
+    context, seq_lens = encode.encode_text_for_training(text, backbone=backbone)
     latents = latents.to(device=backbone.device, dtype=backbone.dtype)
     return dict(
         input_latents=latents,

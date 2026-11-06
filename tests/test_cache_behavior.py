@@ -47,13 +47,15 @@ class _MockTokenizer:
         return torch.zeros(n, 4, dtype=torch.long), torch.ones(n, 4, dtype=torch.long)
 
 
-class _MockTextEncoder:
+class _MockTextEncoder(torch.nn.Module):
     """Records each call so a test can count how often text was encoded."""
 
     def __init__(self, calls):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
         self._calls = calls
 
-    def __call__(self, ids, mask):
+    def forward(self, ids, mask):
         self._calls.append(list(range(ids.shape[0])))
         return torch.zeros(ids.shape[0], 4, 8)
 
