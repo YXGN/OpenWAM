@@ -1,3 +1,5 @@
+> 历史开发/迁移记录，不是当前入口。此源码副本已继续开发，旧 Git/patch 身份与机器运行记录不再代表当前状态。新训练读模型根 README 和 docs/training.md；机器人服务统一使用外层推理项目。
+
 # Nero 4090 推理迁移
 
 把服务器当前 Atom 6248 模型搬到 Linux 单卡 4090，继续使用 `openwam` 协议、8017 端口。流程只有三步：**拉取独立快照 → 安装并校验 → 启动模型服务**。本地 agent 先读 [交接要求](AGENT_HANDOFF.md)。
@@ -9,10 +11,11 @@
 将下面的服务器地址换成平时 SSH 登录这台服务器所用的 IP 或别名。使用新的本地目录，避免与旧协议代码混合；命令可重复执行续传。
 
 ```bash
-OPENWAM_REMOTE='xieweize@你的服务器IP或SSH别名'
+OPENWAM_REMOTE='用户名@服务器IP或SSH别名'
+OPENWAM_HANDOFF_DIR='/path/to/nero_4090_handoff'
 mkdir -p "$HOME/workspace/OpenWAM-nero-4090"
 rsync -avh --partial --info=progress2 \
-  "${OPENWAM_REMOTE}:/data2/xieweize/project/OpenWAM/outputs/nero_4090_handoff_20261013/" \
+  "${OPENWAM_REMOTE}:${OPENWAM_HANDOFF_DIR}/" \
   "$HOME/workspace/OpenWAM-nero-4090/"
 cd "$HOME/workspace/OpenWAM-nero-4090"
 python3 scripts/check_nero_4090.py files

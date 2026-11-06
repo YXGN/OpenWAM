@@ -264,7 +264,7 @@ repository (including Git metadata) and the linked worktree:
 
 ```bash
 export OPENWAM_SOURCE_DIR="$(git rev-parse --show-toplevel)"
-export OPENWAM_WORKSPACE_DIR=/home/me/openwam-workspace
+export OPENWAM_WORKSPACE_DIR=$HOME/openwam-workspace
 export COMPOSE_FILE=compose.yaml:docker/compose.dev.yaml:docker/compose.worktree.yaml
 docker compose run --rm dev bash
 ```

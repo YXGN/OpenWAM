@@ -5,4 +5,4 @@ defaults:
   - _self_
 
 atom:
-  video_latent_cache_dir: /data2/xieweize/project/OpenWAM/outputs/nero_atom_20261004/vae_cache
+  video_latent_cache_dir: ./outputs/nero_atom_20261004/vae_cache

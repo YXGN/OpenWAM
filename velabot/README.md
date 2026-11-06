@@ -1,3 +1,5 @@
+> 历史开发/迁移记录，不是当前入口。此源码副本已继续开发，旧 Git/patch 身份与机器运行记录不再代表当前状态。新训练读模型根 README 和 docs/training.md；机器人服务统一使用外层推理项目。
+
 # OpenWAM VelaBot 训练与推理集成入口
 
 本目录集中维护 OpenWAM 的 VelaBot 训练、开环工具和独立 HTTP front：

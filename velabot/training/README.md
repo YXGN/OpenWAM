@@ -1,3 +1,5 @@
+> 历史开发/迁移记录，不是当前入口。此源码副本已继续开发，旧 Git/patch 身份与机器运行记录不再代表当前状态。新训练读模型根 README 和 docs/training.md；机器人服务统一使用外层推理项目。
+
 # OpenWAM MoonCake 训练与开环工具
 
 本目录提供 MoonCake LeRobot v3 数据转换、CPU 预检和显式训练启动入口。集成仓的 source

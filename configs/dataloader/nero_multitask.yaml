@@ -1,5 +1,5 @@
 type: nero_multitask
-dataset_dir: /data2/xieweize/project/dataset/lerobot_v2/nero_multitask_mooncake_hammer_charger_408_fk_lerobot_v2
+dataset_dir: /path/to/datasets/lerobot_v2/nero_multitask_mooncake_hammer_charger_408_fk_lerobot_v2
 normalization_stats_path: outputs/nero_multitask_data/normalization_stats.npy
 
 # Anchor-relative body XYZ, R_anchor.T @ R_future as rot6d; absolute gripper.

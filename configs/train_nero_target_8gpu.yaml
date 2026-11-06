@@ -4,9 +4,9 @@ defaults:
   - _self_
 
 training:
-  finetune_ckpt_path: /data2/public/OpenWAM-Alpha-Pretrain-Foundation-Model/checkpoint_step_154000.safetensors
+  finetune_ckpt_path: /path/to/foundation/OpenWAM-Alpha-Pretrain-Foundation-Model/checkpoint_step_154000.safetensors
   resume_ckpt_path: null
-  output_path: /data3/xieweize/openwam_runs/nero_multitask_8gpu_b64
+  output_path: outputs/nero_multitask_8gpu_b64
   batch_size: 64
   gradient_accumulation_steps: 1
   num_epochs: 5
@@ -19,10 +19,10 @@ training:
   # Existing normal-completion behavior keeps final weights and removes resume states.
   keep_last_k_ckpts: 1
   weight_archive_steps: [4000]
-  weight_archive_path: /data2/xieweize/project/OpenWAM/outputs/nero_multitask_weights
+  weight_archive_path: ./outputs/nero_multitask_weights
 
 dataloader:
-  normalization_stats_path: /data2/xieweize/project/OpenWAM/outputs/nero_multitask_data/normalization_stats.npy
+  normalization_stats_path: ./outputs/nero_multitask_data/normalization_stats.npy
 
 project:
   wandb:
